@@ -5,12 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:wss": "bun run ./src/server.ts",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "prepare": "ts-patch install && typia patch"
   },
   "devDependencies": {
+    "@types/bun": "^1.1.6",
+    "@types/node": "^20.14.12",
     "@types/three": "^0.167.0",
+    "@types/ws": "^8.5.11",
     "ts-patch": "^3.2.1",
     "typescript": "^5.5.4",
     "vite": "^5.3.4"
@@ -18,6 +22,7 @@
   "dependencies": {
     "@ryoppippi/unplugin-typia": "npm:@jsr/ryoppippi__unplugin-typia@^0.6.13",
     "three": "^0.167.0",
-    "typia": "^6.5.5"
+    "typia": "^6.5.5",
+    "ws": "^8.18.0"
   }
 }
