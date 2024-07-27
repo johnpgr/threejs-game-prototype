@@ -21,10 +21,12 @@ function randomColor(): three.Color {
 }
 
 function randomPlayerPosition(): three.Vector2 {
-    return new three.Vector2(
-        Math.floor(Math.random() * common.MAP_SIZE.x),
-        Math.floor(Math.random() * common.MAP_SIZE.y),
-    );
+    //return new three.Vector2(
+    //    Math.floor(Math.random() * common.MAP_SIZE.x),
+    //    Math.floor(Math.random() * common.MAP_SIZE.y),
+    //);
+
+    return new three.Vector2(0,0);
 }
 
 export class ServerState {

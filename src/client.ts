@@ -8,8 +8,14 @@ class State {
     public me: common.Player | undefined;
     public players = new Map<number, common.Player>();
 
-    public tick() {
-        this.players.forEach((p) => common.updatePlayerPos(p));
+    public tick(textures: Map<number, three.Mesh>) {
+        this.players.forEach((p) => {
+            common.updatePlayerPos(p);
+            const playerMesh = textures.get(p.id);
+            if (playerMesh) {
+                playerMesh.position.set(p.position.x, 0, p.position.y);
+            }
+        });
     }
 }
 
@@ -54,6 +60,10 @@ class Game {
         this.setupCellRaycasting();
         this.setupWs();
         this.setupWheelCameraZoom();
+
+        setInterval(() => {
+            game.state.tick(this.playerTextures);
+        }, 1000 / TPS);
     }
 
     public setupWs() {
@@ -69,10 +79,7 @@ class Game {
             console.log("Websocket error", event);
         });
         this.ws.addEventListener("message", (ev) => {
-            assert(
-                ev.data instanceof ArrayBuffer,
-                "Expected binary message",
-            );
+            assert(ev.data instanceof ArrayBuffer, "Expected binary message");
             assert(ev.data.byteLength >= 1, "Expected non-empty buffer");
             const buf = new Uint8Array(ev.data); // convert to Uint8array
             try {
@@ -85,6 +92,11 @@ class Game {
                         this.state.me.position.set(packet.x, packet.y);
                         this.state.me.color = new three.Color(packet.color);
                         this.state.players.set(this.state.me.id, this.state.me);
+                        const playerMesh = common.boxFromColor(
+                            this.state.me.color,
+                        );
+                        this.playerTextures.set(this.state.me.id, playerMesh);
+                        this.scene.add(playerMesh);
                         break;
                     }
                     case common.PacketKind.PlayerJoin: {
@@ -94,23 +106,24 @@ class Game {
                         player.position.set(packet.x, packet.y);
                         player.color = new three.Color(packet.color);
                         this.state.players.set(packet.id, player);
-                        this.playerTextures.set(
-                            player.id,
-                            common.boxFromColor(player.color),
-                        );
+                        const playerMesh = common.boxFromColor(player.color);
+                        this.playerTextures.set(player.id, playerMesh);
+                        this.scene.add(playerMesh);
                         break;
                     }
                     case common.PacketKind.PlayerLeft: {
                         const packet = common.PlayerLeftPacket.decode(buf);
                         console.log("Received player left packet", packet);
                         this.state.players.delete(packet.id);
-                        this.playerTextures.delete(packet.id);
+                        const playerMesh = this.playerTextures.get(packet.id);
+                        if (playerMesh) {
+                            this.playerTextures.delete(packet.id);
+                            this.scene.remove(playerMesh);
+                        }
                         break;
                     }
                     case common.PacketKind.PlayerMoving: {
-                        const packet = common.PlayerMovingPacket.decode(
-                            buf,
-                        );
+                        const packet = common.PlayerMovingPacket.decode(buf);
                         console.log("Received player moving packet", packet);
                         const player = this.state.players.get(packet.id);
                         if (!player) {
@@ -190,8 +203,7 @@ class Game {
                     this.state.me.moveTarget.x,
                     this.state.me.moveTarget.y,
                 ).encode();
-                console.log("Sending player moving packet", packet);
-                this.ws.send(new ArrayBuffer(64));
+                this.ws.send(packet);
             });
         });
     }
@@ -250,7 +262,8 @@ const ws = new WebSocket(
 const state = new State();
 const game = new Game(scene, renderer, camera, ws, state);
 
-setInterval(() => {
-    game.state.tick();
-}, 1000 / TPS);
 game.render();
+//@ts-ignore
+window.DEBUG = function () {
+    console.log(game);
+};

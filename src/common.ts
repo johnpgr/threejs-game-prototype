@@ -35,7 +35,12 @@ export class HelloPacket implements Packet {
     ) {}
 
     private static _encode = typia.protobuf.createEncode<HelloPacket>();
-    public static decode = typia.protobuf.createDecode<HelloPacket>();
+    private static _decode = typia.protobuf.createDecode<HelloPacket>();
+
+    public static decode(data: Uint8Array): HelloPacket {
+        const packet = HelloPacket._decode(data);
+        return new HelloPacket(packet.id, packet.x, packet.y, packet.color);
+    }
 
     public encode(): Uint8Array {
         return HelloPacket._encode(this);
@@ -51,8 +56,13 @@ export class PlayerJoinPacket implements Packet {
         public color: number,
     ) {}
 
-    public static decode = typia.protobuf.createDecode<PlayerJoinPacket>();
     private static _encode = typia.protobuf.createEncode<PlayerJoinPacket>();
+    private static _decode = typia.protobuf.createDecode<PlayerJoinPacket>();
+
+    public static decode(data: Uint8Array): PlayerJoinPacket {
+        const packet = PlayerJoinPacket._decode(data);
+        return new PlayerJoinPacket(packet.id, packet.x, packet.y, packet.color);
+    }
 
     public encode(): Uint8Array {
         return PlayerJoinPacket._encode(this);
@@ -64,7 +74,12 @@ export class PlayerLeftPacket implements Packet {
     constructor(public id: number) {}
 
     private static _encode = typia.protobuf.createEncode<PlayerLeftPacket>();
-    public static decode = typia.protobuf.createDecode<PlayerLeftPacket>();
+    private static _decode = typia.protobuf.createDecode<PlayerLeftPacket>();
+
+    public static decode(data: Uint8Array): PlayerLeftPacket {
+        const packet = PlayerLeftPacket._decode(data);
+        return new PlayerLeftPacket(packet.id);
+    }
 
     public encode(): Uint8Array {
         return PlayerLeftPacket._encode(this)
@@ -80,7 +95,12 @@ export class PlayerMovingPacket implements Packet {
     ) {}
 
     private static _encode = typia.protobuf.createEncode<PlayerMovingPacket>();
-    public static decode = typia.protobuf.createDecode<PlayerMovingPacket>();
+    private static _decode = typia.protobuf.createDecode<PlayerMovingPacket>();
+
+    public static decode(data: Uint8Array): PlayerMovingPacket {
+        const packet = PlayerMovingPacket._decode(data);
+        return new PlayerMovingPacket(packet.id, packet.targetX, packet.targetY);
+    }
 
     public encode(): Uint8Array {
         return PlayerMovingPacket._encode(this);
@@ -95,6 +115,8 @@ export class Player {
     constructor(public id: number) {}
 }
 
+const PLAYER_SPEED = 1.0;
+
 // TODO: Implement the path finding algorithm where the player moves to its moveTarget position
 // while avoiding walls and other players.
 // currently the player just moves in any direction
@@ -108,8 +130,8 @@ export function updatePlayerPos(p: Player) {
         dx /= l;
         dy /= l;
     }
-    p.position.x += dx;
-    p.position.y += dy;
+    p.position.x += dx * PLAYER_SPEED;
+    p.position.y += dy * PLAYER_SPEED;
 }
 
 export function boxFromColor(color: three.Color): three.Mesh {
