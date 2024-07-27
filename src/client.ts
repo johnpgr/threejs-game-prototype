@@ -1,4 +1,5 @@
 import * as three from "three";
+import * as addons from "three/addons/renderers/CSS3DRenderer.js";
 import * as common from "./common";
 import { assert } from "./utils";
 
@@ -7,10 +8,15 @@ const TPS = 30;
 class State {
     public me: common.Player | undefined;
     public players = new Map<number, common.Player>();
+    private lastTimestamp = performance.now();
 
     public tick(textures: Map<number, three.Mesh>) {
+        const now = performance.now();
+        const deltaTime = (now - this.lastTimestamp) / 1000;
+        this.lastTimestamp = now;
+
         this.players.forEach((p) => {
-            common.updatePlayerPos(p);
+            common.updatePlayerPos(p, deltaTime);
             const playerMesh = textures.get(p.id);
             if (playerMesh) {
                 playerMesh.position.set(p.position.x, 0, p.position.y);
@@ -25,10 +31,12 @@ class Game {
     private mousePos = new three.Vector2();
     private cellHighlightMesh: three.LineLoop;
     private playerTextures = new Map<number, three.Mesh>();
+    private playerUIs = new Map<number, addons.CSS3DObject>();
 
     constructor(
         public scene: three.Scene,
         public renderer: three.WebGLRenderer,
+        public rendererCss: addons.CSS3DRenderer,
         public camera: three.Camera,
         public ws: WebSocket,
         public state: State,
@@ -59,7 +67,7 @@ class Game {
         this.scene.add(this.cellHighlightMesh);
         this.setupCellRaycasting();
         this.setupWs();
-        this.setupWheelCameraZoom();
+        //this.setupWheelCameraZoom();
 
         setInterval(() => {
             game.state.tick(this.playerTextures);
@@ -95,8 +103,11 @@ class Game {
                         const playerMesh = common.boxFromColor(
                             this.state.me.color,
                         );
+                        const playerUI = this.createPlayerUI(this.state.me);
                         this.playerTextures.set(this.state.me.id, playerMesh);
+                        this.playerUIs.set(this.state.me.id, playerUI);
                         this.scene.add(playerMesh);
+                        this.scene.add(playerUI);
                         break;
                     }
                     case common.PacketKind.PlayerJoin: {
@@ -116,9 +127,14 @@ class Game {
                         console.log("Received player left packet", packet);
                         this.state.players.delete(packet.id);
                         const playerMesh = this.playerTextures.get(packet.id);
+                        const playerUI = this.playerUIs.get(packet.id);
                         if (playerMesh) {
                             this.playerTextures.delete(packet.id);
                             this.scene.remove(playerMesh);
+                        }
+                        if (playerUI) {
+                            this.playerUIs.delete(packet.id);
+                            this.scene.remove(playerUI);
                         }
                         break;
                     }
@@ -147,12 +163,24 @@ class Game {
         });
     }
 
-    public render() {
-        function frame() {
-            renderer.render(scene, camera);
+    public animate() {
+        this.renderer.setAnimationLoop(this.animate.bind(this));
+        for (const [id, ui] of this.playerUIs.entries()) {
+            const player = this.state.players.get(id);
+            if (!player) continue;
+            // Position the UI to the right of the player's cube
+            ui.position.copy(
+                new three.Vector3(player.position.x, 0, player.position.y),
+            );
+            ui.position.x += 2.5; // Adjust this value to change the UI's distance from the player
+            ui.position.y += 2; // Adjust this to change the vertical position of the UI
+
+            // Make the UI always face the camera
+            ui.quaternion.copy(camera.quaternion);
         }
 
-        renderer.setAnimationLoop(frame);
+        this.renderer.render(scene, camera);
+        this.rendererCss.render(scene, camera);
     }
 
     private setupWheelCameraZoom() {
@@ -225,17 +253,51 @@ class Game {
         }
         cb(null);
     }
+
+    createPlayerUI(player: common.Player): addons.CSS3DObject {
+        const div = document.createElement("div");
+        div.className = "player-ui";
+        div.style.width = "300px";
+        div.style.backgroundColor = "rgba(0, 0, 0, 0.7)";
+        div.style.color = "white";
+        div.style.padding = "10px";
+        div.style.borderRadius = "5px";
+        div.style.fontFamily = "monospace";
+        div.style.fontSize = "18px";
+
+        const updateUI = () => {
+            div.innerHTML = `<pre>${JSON.stringify(player, null, 4)}</pre>`;
+        };
+
+        updateUI();
+
+        // Create a CSS3DObject with the div
+        const css3dObject = new addons.CSS3DObject(div);
+        css3dObject.scale.set(0.01, 0.01, 0.01); // Scale down the CSS object to match your scene scale
+
+        // Update the UI periodically
+        setInterval(updateUI, 100);
+
+        return css3dObject;
+    }
 }
+
+const scene = new three.Scene();
 
 const renderer = new three.WebGLRenderer();
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setClearColor(0x202020);
 document.body.appendChild(renderer.domElement);
 
-const scene = new three.Scene();
+const rendererCss = new addons.CSS3DRenderer();
+rendererCss.setSize(window.innerWidth, window.innerHeight);
+rendererCss.domElement.style.position = "absolute";
+rendererCss.domElement.style.top = "0";
+rendererCss.domElement.style.pointerEvents = "none";
+document.body.appendChild(rendererCss.domElement);
 
 const DEFAULT_ZOOM_FACTOR = 0.5;
-const aspect = window.innerWidth / window.innerHeight;
+let aspect = window.innerWidth / window.innerHeight;
 const d = 10;
 const camera = new three.OrthographicCamera(
     -d * aspect * DEFAULT_ZOOM_FACTOR,
@@ -247,6 +309,19 @@ const camera = new three.OrthographicCamera(
 );
 camera.position.set(d, d, d);
 camera.lookAt(scene.position);
+
+window.addEventListener(
+    "resize",
+    () => {
+        aspect = window.innerWidth / window.innerHeight;
+        camera.left = -d * aspect * DEFAULT_ZOOM_FACTOR;
+        camera.right = d * aspect * DEFAULT_ZOOM_FACTOR;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        rendererCss.setSize(window.innerWidth, window.innerHeight);
+    },
+    false,
+);
 
 const grid = new three.GridHelper(
     common.MAP_SIZE.x,
@@ -260,9 +335,9 @@ const ws = new WebSocket(
     `ws://${window.location.hostname}:${common.SERVER_PORT}`,
 );
 const state = new State();
-const game = new Game(scene, renderer, camera, ws, state);
+const game = new Game(scene, renderer, rendererCss, camera, ws, state);
+game.animate();
 
-game.render();
 //@ts-ignore
 window.DEBUG = function () {
     console.log(game);

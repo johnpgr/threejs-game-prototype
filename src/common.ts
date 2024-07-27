@@ -61,7 +61,12 @@ export class PlayerJoinPacket implements Packet {
 
     public static decode(data: Uint8Array): PlayerJoinPacket {
         const packet = PlayerJoinPacket._decode(data);
-        return new PlayerJoinPacket(packet.id, packet.x, packet.y, packet.color);
+        return new PlayerJoinPacket(
+            packet.id,
+            packet.x,
+            packet.y,
+            packet.color,
+        );
     }
 
     public encode(): Uint8Array {
@@ -82,7 +87,7 @@ export class PlayerLeftPacket implements Packet {
     }
 
     public encode(): Uint8Array {
-        return PlayerLeftPacket._encode(this)
+        return PlayerLeftPacket._encode(this);
     }
 }
 
@@ -99,7 +104,11 @@ export class PlayerMovingPacket implements Packet {
 
     public static decode(data: Uint8Array): PlayerMovingPacket {
         const packet = PlayerMovingPacket._decode(data);
-        return new PlayerMovingPacket(packet.id, packet.targetX, packet.targetY);
+        return new PlayerMovingPacket(
+            packet.id,
+            packet.targetX,
+            packet.targetY,
+        );
     }
 
     public encode(): Uint8Array {
@@ -111,27 +120,54 @@ export class Player {
     public position: three.Vector2 = new three.Vector2(0, 0);
     public color: three.Color | null = null;
     public moveTarget: three.Vector2 | null = null;
+    public speed: number = BASE_PLAYER_SPEED;
 
     constructor(public id: number) {}
 }
 
-const PLAYER_SPEED = 1.0;
+const BASE_PLAYER_SPEED = 5.0; // Initial speed
+const ACCELERATION = 0.1; // Speed increase per tick
+const MAX_SPEED = 10.0; // Maximum speed cap
 
-// TODO: Implement the path finding algorithm where the player moves to its moveTarget position
-// while avoiding walls and other players.
-// currently the player just moves in any direction
-export function updatePlayerPos(p: Player) {
-    if(!p.moveTarget) return;
+export function updatePlayerPos(p: Player, deltaTime: number) {
+    if (!p.moveTarget) return;
+
+    // Initialize speed if it doesn't exist
+    if (p.speed === undefined) {
+        p.speed = BASE_PLAYER_SPEED;
+    }
+
+    // Increase speed, but cap it at MAX_SPEED
+    p.speed = Math.min(p.speed + ACCELERATION * deltaTime, MAX_SPEED);
+
     let dx = p.moveTarget.x - p.position.x;
     let dy = p.moveTarget.y - p.position.y;
 
-    const l = dx * dx + dy * dy;
-    if (l !== 0) {
-        dx /= l;
-        dy /= l;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    
+    if (distance > 0.01) { // Only move if we're not too close to the target
+        // Normalize direction
+        dx /= distance;
+        dy /= distance;
+
+        // Apply speed and deltaTime
+        const moveDistance = p.speed * deltaTime;
+        
+        // Check if we would overshoot the target
+        if (moveDistance > distance) {
+            // If so, just move to the target
+            p.position.x = p.moveTarget.x;
+            p.position.y = p.moveTarget.y;
+        } else {
+            // Otherwise, move towards the target
+            p.position.x += dx * moveDistance;
+            p.position.y += dy * moveDistance;
+        }
+    } else {
+        // We've reached the target, reset speed
+        p.speed = BASE_PLAYER_SPEED;
+        p.moveTarget = null; // Clear the move target
     }
-    p.position.x += dx * PLAYER_SPEED;
-    p.position.y += dy * PLAYER_SPEED;
 }
 
 export function boxFromColor(color: three.Color): three.Mesh {

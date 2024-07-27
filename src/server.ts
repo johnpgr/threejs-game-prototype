@@ -35,7 +35,7 @@ export class ServerState {
     public eventQueue = new Set<common.Packet>();
     public joinedIds = new Set<number>();
     public leftIds = new Set<number>();
-    public timestamp = performance.now();
+    private lastTimestamp = performance.now();
 
     constructor(public wss: WebSocketServer) {
         this.setupWss();
@@ -43,9 +43,9 @@ export class ServerState {
     }
 
     public tick() {
-        const timestamp = performance.now();
-        //const dt = (timestamp - this.timestamp) / 1000;
-        this.timestamp = timestamp;
+        const now = performance.now();
+        const deltaTime = (now - this.lastTimestamp) / 1000;
+        this.lastTimestamp = now;
         this.joinedIds.clear();
         this.leftIds.clear();
 
@@ -152,8 +152,8 @@ export class ServerState {
                 }
             }
         });
-        const tickTime = performance.now() - timestamp;
-        this.players.forEach((p) => common.updatePlayerPos(p));
+        const tickTime = performance.now() - this.lastTimestamp;
+        this.players.forEach((p) => common.updatePlayerPos(p, deltaTime));
         this.eventQueue.clear();
         setTimeout(
             this.tick.bind(this),
