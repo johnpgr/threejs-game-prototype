@@ -1,14 +1,17 @@
 import * as three from "three";
 import typia from "typia";
+import type { i32 } from "./types";
+import type * as ws from "ws";
 
 export const SERVER_PORT = 6970;
 export const MAP_SIZE = new three.Vector2(100, 100);
 
 export enum PacketKind {
     Hello,
-    PlayerJoin,
-    PlayerLeft,
+    PlayerJoinBatch,
+    PlayerLeftBatch,
     PlayerMoving,
+    PlayerMovingBatch,
 }
 
 export interface Packet {
@@ -28,10 +31,10 @@ export class HelloPacket implements Packet {
     public kind = PacketKind.Hello;
 
     constructor(
-        public id: number,
-        public x: number,
-        public y: number,
-        public color: number,
+        public id: i32,
+        public x: i32,
+        public y: i32,
+        public color: i32,
     ) {}
 
     private static _encode = typia.protobuf.createEncode<HelloPacket>();
@@ -47,56 +50,65 @@ export class HelloPacket implements Packet {
     }
 }
 
-export class PlayerJoinPacket implements Packet {
-    public kind = PacketKind.PlayerJoin;
-    constructor(
-        public id: number,
-        public x: number,
-        public y: number,
-        public color: number,
-    ) {}
+export interface PlayerJoin {
+    id: i32;
+    x: i32;
+    y: i32;
+    color: i32;
+}
 
-    private static _encode = typia.protobuf.createEncode<PlayerJoinPacket>();
-    private static _decode = typia.protobuf.createDecode<PlayerJoinPacket>();
+export class PlayerJoinBatchPacket implements Packet {
+    public kind = PacketKind.PlayerJoinBatch;
+    constructor(public players: Array<PlayerJoin>) {}
 
-    public static decode(data: Uint8Array): PlayerJoinPacket {
-        const packet = PlayerJoinPacket._decode(data);
-        return new PlayerJoinPacket(
-            packet.id,
-            packet.x,
-            packet.y,
-            packet.color,
-        );
+    private static _encode =
+        typia.protobuf.createEncode<PlayerJoinBatchPacket>();
+    private static _decode =
+        typia.protobuf.createDecode<PlayerJoinBatchPacket>();
+
+    public static decode(data: Uint8Array): PlayerJoinBatchPacket {
+        const packet = PlayerJoinBatchPacket._decode(data);
+        return new PlayerJoinBatchPacket(packet.players);
     }
 
     public encode(): Uint8Array {
-        return PlayerJoinPacket._encode(this);
+        return PlayerJoinBatchPacket._encode(this);
     }
 }
 
-export class PlayerLeftPacket implements Packet {
-    public kind = PacketKind.PlayerLeft;
-    constructor(public id: number) {}
+export interface PlayerLeft {
+    id: i32;
+}
 
-    private static _encode = typia.protobuf.createEncode<PlayerLeftPacket>();
-    private static _decode = typia.protobuf.createDecode<PlayerLeftPacket>();
+export class PlayerLeftBatchPacket implements Packet {
+    public kind = PacketKind.PlayerLeftBatch;
+    constructor(public playerIds: Array<number>) {}
 
-    public static decode(data: Uint8Array): PlayerLeftPacket {
-        const packet = PlayerLeftPacket._decode(data);
-        return new PlayerLeftPacket(packet.id);
+    private static _encode = typia.protobuf.createEncode<PlayerLeftBatchPacket>();
+    private static _decode = typia.protobuf.createDecode<PlayerLeftBatchPacket>();
+
+    public static decode(data: Uint8Array): PlayerLeftBatchPacket {
+        const packet = PlayerLeftBatchPacket._decode(data);
+        return new PlayerLeftBatchPacket(packet.playerIds);
     }
 
     public encode(): Uint8Array {
-        return PlayerLeftPacket._encode(this);
+        return PlayerLeftBatchPacket._encode(this);
     }
 }
 
-export class PlayerMovingPacket implements Packet {
+export interface PlayerMove {
+    id: number;
+    targetX: number;
+    targetY: number;
+}
+
+export class PlayerMovingPacket implements Packet, PlayerMove {
     public kind = PacketKind.PlayerMoving;
     constructor(
-        public id: number,
-        public targetX: number,
-        public targetY: number,
+        public id: i32,
+        public targetX: i32,
+        public targetY: i32,
     ) {}
 
     private static _encode = typia.protobuf.createEncode<PlayerMovingPacket>();
@@ -116,13 +128,38 @@ export class PlayerMovingPacket implements Packet {
     }
 }
 
-export class Player {
-    public position: three.Vector2 = new three.Vector2(0, 0);
-    public color: three.Color | null = null;
-    public moveTarget: three.Vector2 | null = null;
-    public speed: number = BASE_PLAYER_SPEED;
+export class PlayerMovingBatchPacket implements Packet {
+    public kind = PacketKind.PlayerMovingBatch;
+    constructor(public moves: Array<PlayerMove>) {}
 
-    constructor(public id: number) {}
+    private static _encode =
+        typia.protobuf.createEncode<PlayerMovingBatchPacket>();
+    private static _decode =
+        typia.protobuf.createDecode<PlayerMovingBatchPacket>();
+
+    public static decode(data: Uint8Array): PlayerMovingBatchPacket {
+        const packet = PlayerMovingBatchPacket._decode(data);
+        return new PlayerMovingBatchPacket(packet.moves);
+    }
+
+    public encode(): Uint8Array {
+        return PlayerMovingBatchPacket._encode(this);
+    }
+}
+
+
+export function sendPacket<T extends Packet>(ws: WebSocket | ws.WebSocket, packet: T) {
+    ws.send(packet.encode());
+}
+
+export class Player {
+    constructor(
+        public id: number,
+        public position: three.Vector2 = new three.Vector2(0, 0),
+        public color: three.Color | null = null,
+        public moveTarget: three.Vector2 | null = null,
+        public speed: number = BASE_PLAYER_SPEED,
+    ) {}
 }
 
 const BASE_PLAYER_SPEED = 5.0; // Initial speed
@@ -144,15 +181,16 @@ export function updatePlayerPos(p: Player, deltaTime: number) {
     let dy = p.moveTarget.y - p.position.y;
 
     const distance = Math.sqrt(dx * dx + dy * dy);
-    
-    if (distance > 0.01) { // Only move if we're not too close to the target
+
+    if (distance > 0.01) {
+        // Only move if we're not too close to the target
         // Normalize direction
         dx /= distance;
         dy /= distance;
 
         // Apply speed and deltaTime
         const moveDistance = p.speed * deltaTime;
-        
+
         // Check if we would overshoot the target
         if (moveDistance > distance) {
             // If so, just move to the target

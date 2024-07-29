@@ -1,7 +1,7 @@
 import * as three from "three";
-import { type WebSocket, WebSocketServer } from "ws";
+import { type WebSocket, type MessageEvent, WebSocketServer } from "ws";
 import * as common from "./common";
-import { unreachable } from "./utils";
+import { exhaustive } from "./utils";
 
 const MAX_PLAYERS = 10;
 const SERVER_TPS = 30;
@@ -26,7 +26,6 @@ function randomPlayerPosition(): three.Vector2 {
     //    Math.floor(Math.random() * common.MAP_SIZE.x),
     //    Math.floor(Math.random() * common.MAP_SIZE.y),
     //);
-
     return new three.Vector2(0, 0);
 }
 
@@ -36,10 +35,11 @@ export class ServerState {
     public eventQueue = new Set<common.Packet>();
     public joinedIds = new Set<number>();
     public leftIds = new Set<number>();
+    public moves = new Set<common.PlayerMovingPacket>();
     private lastTimestamp = performance.now();
 
     constructor(public wss: WebSocketServer) {
-        this.setupWss();
+        wss.on("connection", this.handleConnection.bind(this));
         setTimeout(this.tick.bind(this), 1000 / SERVER_TPS);
     }
 
@@ -47,206 +47,155 @@ export class ServerState {
         const now = performance.now();
         const deltaTime = (now - this.lastTimestamp) / 1000;
         this.lastTimestamp = now;
-        this.joinedIds.clear();
-        this.leftIds.clear();
-
-        // This makes sure that if someone joins and leves in the same tick, the player will not be removed
-        this.eventQueue.forEach((e) => {
-            switch (e.kind) {
-                case common.PacketKind.PlayerJoin: {
-                    const packet = e as common.PlayerJoinPacket;
-                    console.log(`[eQueue]: Player ${packet.id} joined`);
-                    this.joinedIds.add(packet.id);
-                    break;
-                }
-                case common.PacketKind.PlayerLeft: {
-                    const packet = e as common.PlayerLeftPacket;
-                    if (!this.joinedIds.delete(packet.id)) {
-                        this.leftIds.add(packet.id);
-                    }
-                    break;
-                }
-            }
-        });
-        // Greet all the joined players and notify them about other players.
-        this.joinedIds.forEach((joinedId) => {
-            const joinedPlayer = this.players.get(joinedId);
-            if (joinedPlayer !== undefined) {
-                // Notify the joined player about themselves
-                joinedPlayer.ws.send(
-                    new common.HelloPacket(
-                        joinedPlayer.id,
-                        joinedPlayer.position.x,
-                        joinedPlayer.position.y,
-                        joinedPlayer.color!.getHex(),
-                    ).encode(),
-                );
-                // Reconstruct the state of the other players
-                this.players.forEach((otherPlayer) => {
-                    // Joined player should already know about themselves
-                    if (joinedId !== otherPlayer.id) {
-                        const packet = new common.PlayerJoinPacket(
-                            otherPlayer.id,
-                            otherPlayer.position.x,
-                            otherPlayer.position.y,
-                            otherPlayer.color!.getHex(),
-                        );
-                        joinedPlayer.ws.send(packet.encode());
-                        // Send the state of the other players to the joined player
-                        if (otherPlayer.moveTarget) {
-                            const packet = new common.PlayerMovingPacket(
-                                otherPlayer.id,
-                                otherPlayer.moveTarget.x,
-                                otherPlayer.moveTarget.y,
-                            );
-                            joinedPlayer.ws.send(packet.encode());
-                        }
-                    }
-                });
-            }
-        });
-
-        // Notifying about who joined
-        this.joinedIds.forEach((joinedId) => {
-            const joinedPlayer = this.players.get(joinedId);
-            // This should never happen, but we handling none existing ids for more robustness
-            if (joinedPlayer === undefined) return;
-
-            this.players.forEach((otherPlayer) => {
-                // Notify the other players about the joined player
-                if (joinedId !== otherPlayer.id) {
-                    otherPlayer.ws.send(
-                        new common.PlayerJoinPacket(
-                            joinedPlayer.id,
-                            joinedPlayer.position.x,
-                            joinedPlayer.position.y,
-                            joinedPlayer.color!.getHex(),
-                        ).encode(),
-                    );
-                }
-            });
-        });
-
-        // Notify about who left
-        this.leftIds.forEach((leftId) => {
-            this.players.forEach((otherPlayer) => {
-                otherPlayer.ws.send(
-                    new common.PlayerLeftPacket(leftId).encode(),
-                );
-            });
-        });
-
-        // Notify about movement
-        this.eventQueue.forEach((event) => {
-            switch (event.kind) {
-                case common.PacketKind.PlayerMoving: {
-                    const packet = event as common.PlayerMovingPacket;
-                    const player = this.players.get(packet.id);
-                    if (player === undefined) {
-                        // This May happen if somebody joined, moved and left within a single tick. Just skipping.
-                        return;
-                    }
-                    player.moveTarget = new three.Vector2(
-                        packet.targetX,
-                        packet.targetY,
-                    );
-                    const broadcastPacket = new common.PlayerMovingPacket(
-                        player.id,
-                        packet.targetX,
-                        packet.targetY,
-                    );
-                    this.players.forEach((otherPlayer) => {
-                        if (player.id !== otherPlayer.id) {
-                            otherPlayer.ws.send(broadcastPacket.encode());
-                        }
-                    });
-                    break;
-                }
-            }
-        });
-        const tickTime = performance.now() - this.lastTimestamp;
-        this.players.forEach((p) => common.updatePlayerPos(p, deltaTime));
-        this.eventQueue.clear();
+        this.updatePlayersPositions(deltaTime);
+        this.sendUpdatesToPlayers();
+        this.clearTickData();
+        const tickTime = performance.now() - now;
         setTimeout(
             this.tick.bind(this),
             Math.max(0, 1000 / SERVER_TPS - tickTime),
         );
     }
 
-    private setupWss() {
-        this.wss.on("connection", (ws) => {
-            ws.binaryType = "arraybuffer";
-            if (this.players.size >= MAX_PLAYERS) {
-                ws.close(1000, "Server is full");
-                return;
+    private handleConnection(ws: WebSocket) {
+        ws.binaryType = "arraybuffer";
+        const player = this.addPlayer(ws);
+        if (!player) return;
+        this.joinedIds.add(player.id);
+        ws.addEventListener("message", (ev) => this.handleMessage(player, ev));
+        ws.addEventListener("close", () => this.handleDisconnection(player));
+    }
+
+    private handleMessage(p: ServerPlayer, ev: MessageEvent) {
+        console.log(`[ws]: Received message from player ${p.id}`);
+        if (!(ev.data instanceof Uint8Array) || ev.data.byteLength < 1) {
+            p.ws.close(1003, "Invalid message");
+            return;
+        }
+        try {
+            const { kind } = common.Packet.decode(ev.data);
+            switch (kind) {
+                case common.PacketKind.PlayerMoving:
+                    this.handlePlayerMoving(ev.data);
+                    break;
+                case common.PacketKind.Hello:
+                case common.PacketKind.PlayerJoinBatch:
+                case common.PacketKind.PlayerLeftBatch:
+                case common.PacketKind.PlayerMovingBatch:
+                    // The only packet that server expects from client is PlayerMoving
+                    throw new Error(
+                        `Unexpected packet kind: ${common.PacketKind[kind]}`,
+                    );
+                default:
+                    exhaustive(kind);
             }
-            const player = this.addPlayer(ws);
-            console.log(`Player ${player.id} joined`);
-            this.eventQueue.add(
-                new common.PlayerJoinPacket(
-                    player.id,
-                    player.position.x,
-                    player.position.y,
-                    player.color!.getHex(),
-                ),
-            );
-            ws.addEventListener("message", (e) => {
-                console.log(`Received message from player ${player.id}`);
-                if (!(e.data instanceof Uint8Array)) {
-                    ws.close(1003, "Invalid message");
-                    return;
-                }
-                if (e.data.byteLength < 1) {
-                    ws.close(1003, "Invalid message");
-                    return;
-                }
-                try {
-                    const { kind } = common.Packet.decode(e.data);
-                    switch (kind) {
-                        case common.PacketKind.Hello: {
-                            return unreachable(
-                                "Hello packet should be handled by client",
-                            );
-                        }
-                        case common.PacketKind.PlayerJoin: {
-                            return unreachable(
-                                "PlayerJoin packet should be handled by client",
-                            );
-                        }
-                        case common.PacketKind.PlayerMoving: {
-                            try {
-                                const packet = common.PlayerMovingPacket.decode(
-                                    e.data,
-                                );
-                                this.eventQueue.add(packet);
-                            } catch (error) {
-                                ws.close(1003, "Invalid message");
-                                return;
-                            }
-                        }
-                    }
-                } catch (error) {
-                    ws.close(1003, "Invalid message");
-                    return;
-                }
-            });
-            ws.addEventListener("close", () => {
-                console.log(`Player ${player.id} left`);
-                this.players.delete(player.id);
-                this.eventQueue.add(new common.PlayerLeftPacket(player.id));
-            });
+        } catch (error) {
+            console.error("Error handling message:", error);
+            p.ws.close(1003, "Invalid message");
+        }
+    }
+
+    private handleDisconnection(p: ServerPlayer) {
+        console.log(`Player ${p.id} disconnected`);
+        this.players.delete(p.id);
+        this.leftIds.add(p.id);
+    }
+
+    private handlePlayerMoving(data: Uint8Array) {
+        const decoded = common.PlayerMovingPacket.decode(data);
+        this.moves.add(decoded);
+    }
+
+    private updatePlayersPositions(deltaTime: number) {
+        this.players.forEach((p) => common.updatePlayerPos(p, deltaTime));
+    }
+
+    private sendUpdatesToPlayers() {
+        this.sendWelcomeToNewPlayers();
+
+        const joinPackets = this.createBatchJoinsPacket();
+        const leftPackets = this.createBatchLeftPacket();
+        const movingPackets = this.createBatchMovingPacket();
+
+        this.players.forEach((p) => {
+            if (joinPackets) common.sendPacket(p.ws, joinPackets);
+            if (leftPackets) common.sendPacket(p.ws, leftPackets);
+            if (movingPackets) common.sendPacket(p.ws, movingPackets);
         });
     }
 
-    public addPlayer(ws: WebSocket): ServerPlayer {
+    private createBatchJoinsPacket(): common.PlayerJoinBatchPacket | null {
+        if (this.joinedIds.size === 0) return null;
+        const joined = Array.from(this.joinedIds).map((id) => {
+            const player = this.players.get(id)!;
+            return {
+                id: player.id,
+                x: player.position.x,
+                y: player.position.y,
+                color: player.color!.getHex(),
+            };
+        });
+        return new common.PlayerJoinBatchPacket(joined);
+    }
+
+    private createBatchLeftPacket(): common.PlayerLeftBatchPacket | null {
+        if (this.leftIds.size === 0) return null;
+        return new common.PlayerLeftBatchPacket(Array.from(this.leftIds));
+    }
+
+    private createBatchMovingPacket(): common.PlayerMovingBatchPacket | null {
+        if (this.moves.size === 0) return null;
+        return new common.PlayerMovingBatchPacket(Array.from(this.moves));
+    }
+
+    private sendWelcomeToNewPlayers() {
+        this.joinedIds.forEach((joinedId) => {
+            const joinedPlayer = this.players.get(joinedId);
+            if (!joinedPlayer) return;
+
+            common.sendPacket<common.HelloPacket>(
+                joinedPlayer.ws,
+                new common.HelloPacket(
+                    joinedPlayer.id,
+                    joinedPlayer.position.x,
+                    joinedPlayer.position.y,
+                    joinedPlayer.color!.getHex(),
+                ),
+            );
+
+            const existingPlayers = Array.from(this.players.values())
+                .filter((p) => p.id !== joinedId)
+                .map((p) => ({
+                    id: p.id,
+                    x: p.position.x,
+                    y: p.position.y,
+                    color: p.color!.getHex(),
+                }));
+
+            if (existingPlayers.length > 0) {
+                common.sendPacket<common.PlayerJoinBatchPacket>(
+                    joinedPlayer.ws,
+                    new common.PlayerJoinBatchPacket(existingPlayers),
+                );
+            }
+        });
+    }
+
+    private clearTickData() {
+        this.joinedIds.clear();
+        this.leftIds.clear();
+        this.moves.clear();
+    }
+
+    private addPlayer(ws: WebSocket): ServerPlayer | null {
+        if (this.players.size >= MAX_PLAYERS) {
+            ws.close(1000, "Server is full");
+            return null;
+        }
         const player = new ServerPlayer(this.nextPlayerId++, ws);
         console.log(`Player ${player.id} added`);
         this.players.set(player.id, player);
         return player;
-    }
-
-    public removePlayer(player: ServerPlayer) {
-        this.players.delete(player.id);
     }
 }
 

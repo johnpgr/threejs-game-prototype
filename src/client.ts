@@ -56,7 +56,7 @@ class Game {
         );
         const outlineMaterial = new three.LineBasicMaterial({
             color: 0xffffff,
-            linewidth: 5,
+            linewidth: 4,
         });
         this.cellHighlightMesh = new three.LineLoop(
             outlineGeometry,
@@ -110,53 +110,63 @@ class Game {
                         this.scene.add(playerUI);
                         break;
                     }
-                    case common.PacketKind.PlayerJoin: {
-                        const packet = common.PlayerJoinPacket.decode(buf);
-                        console.log(`Player joined: ${packet.id}`);
-                        const player = new common.Player(packet.id);
-                        player.position.set(packet.x, packet.y);
-                        player.color = new three.Color(packet.color);
-                        this.state.players.set(packet.id, player);
-                        const playerMesh = common.boxFromColor(player.color);
-                        const playerUI = this.createPlayerUI(player);
-                        this.playerTextures.set(player.id, playerMesh);
-                        this.playerUIs.set(player.id, playerUI);
-                        this.scene.add(playerMesh);
-                        this.scene.add(playerUI);
-                        break;
-                    }
-                    case common.PacketKind.PlayerLeft: {
-                        const packet = common.PlayerLeftPacket.decode(buf);
-                        console.log(`Player left: ${packet.id}`);
-                        this.state.players.delete(packet.id);
-                        const playerMesh = this.playerTextures.get(packet.id);
-                        const playerUI = this.playerUIs.get(packet.id);
-                        if (playerMesh) {
-                            this.playerTextures.delete(packet.id);
-                            this.scene.remove(playerMesh);
-                        }
-                        if (playerUI) {
-                            this.playerUIs.delete(packet.id);
-                            this.scene.remove(playerUI);
-                        }
-                        break;
-                    }
-                    case common.PacketKind.PlayerMoving: {
-                        const packet = common.PlayerMovingPacket.decode(buf);
-                        console.log(`Player ${packet.id} moving to ${packet.targetX}, ${packet.targetY}`);
-                        const player = this.state.players.get(packet.id);
-                        if (!player) {
-                            console.log(this.state.players);
-                            console.log(
-                                `Received message for unknown player ${packet.id}`,
+                    case common.PacketKind.PlayerJoinBatch: {
+                        const packet = common.PlayerJoinBatchPacket.decode(buf);
+                        for (const p of packet.players) {
+                            if (p.id === this.state.me?.id) continue;
+                            const player = new common.Player(
+                                p.id,
+                                new three.Vector2().set(p.x, p.y),
+                                new three.Color(p.color),
                             );
-                            this.ws.close();
-                            return;
+                            console.log(`Player joined: ${player.id}`);
+                            this.state.players.set(p.id, player);
+                            const playerMesh = common.boxFromColor(
+                                player.color!,
+                            );
+                            const playerUI = this.createPlayerUI(player);
+                            this.playerTextures.set(player.id, playerMesh);
+                            this.playerUIs.set(player.id, playerUI);
+                            this.scene.add(playerMesh);
+                            this.scene.add(playerUI);
                         }
-                        player.moveTarget = new three.Vector2(
-                            packet.targetX,
-                            packet.targetY,
-                        );
+                        break;
+                    }
+                    case common.PacketKind.PlayerLeftBatch: {
+                        const packet = common.PlayerLeftBatchPacket.decode(buf);
+                        for (const id of packet.playerIds) {
+                            console.log(`Player left: ${id}`);
+                            this.state.players.delete(id);
+                            const playerMesh = this.playerTextures.get(id);
+                            const playerUI = this.playerUIs.get(id);
+                            if (playerMesh) {
+                                this.playerTextures.delete(id);
+                                this.scene.remove(playerMesh);
+                            }
+                            if (playerUI) {
+                                this.playerUIs.delete(id);
+                                this.scene.remove(playerUI);
+                            }
+                        }
+                        break;
+                    }
+                    case common.PacketKind.PlayerMovingBatch: {
+                        const packet =
+                            common.PlayerMovingBatchPacket.decode(buf);
+                        for (const move of packet.moves) {
+                            const player = this.state.players.get(move.id);
+                            if (!player) {
+                                console.log(
+                                    `Received message for unknown player ${move.id}`,
+                                );
+                                this.ws.close();
+                                return;
+                            }
+                            player.moveTarget = new three.Vector2(
+                                move.targetX,
+                                move.targetY,
+                            );
+                        }
                         break;
                     }
                 }
@@ -184,7 +194,7 @@ class Game {
         }
 
         this.renderer.render(scene, camera);
-        //this.rendererCss.render(scene, camera);
+        this.rendererCss.render(scene, camera);
     }
 
     private setupWheelCameraZoom() {
@@ -260,7 +270,6 @@ class Game {
 
     createPlayerUI(player: common.Player): addons.CSS3DObject {
         const div = document.createElement("div");
-        div.className = "player-ui";
         div.style.width = "300px";
         div.style.backgroundColor = "rgba(0, 0, 0, 0.7)";
         div.style.color = "white";
@@ -287,7 +296,6 @@ class Game {
 }
 
 const scene = new three.Scene();
-
 const renderer = new three.WebGLRenderer();
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setClearColor(0x202020);
@@ -300,7 +308,7 @@ rendererCss.domElement.style.top = "0";
 rendererCss.domElement.style.pointerEvents = "none";
 document.body.appendChild(rendererCss.domElement);
 
-const DEFAULT_ZOOM_FACTOR = .8;
+const DEFAULT_ZOOM_FACTOR = 0.8;
 let aspect = window.innerWidth / window.innerHeight;
 const d = 10;
 const camera = new three.OrthographicCamera(
