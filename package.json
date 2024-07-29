@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:wss": "bun run ./src/server.ts",
+    "dev:wss": "bun run --watch ./src/server.ts",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "prepare": "ts-patch install && typia patch"

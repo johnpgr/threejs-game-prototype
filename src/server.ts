@@ -1,7 +1,7 @@
 import * as three from "three";
-import * as common from "./common";
 import { type WebSocket, WebSocketServer } from "ws";
-import { assert, unreachable } from "./utils";
+import * as common from "./common";
+import { unreachable } from "./utils";
 
 const MAX_PLAYERS = 10;
 const SERVER_TPS = 30;
@@ -12,6 +12,7 @@ export class ServerPlayer extends common.Player {
         public ws: WebSocket,
     ) {
         super(id);
+        this.position = randomPlayerPosition();
         this.color = randomColor();
     }
 }
@@ -26,7 +27,7 @@ function randomPlayerPosition(): three.Vector2 {
     //    Math.floor(Math.random() * common.MAP_SIZE.y),
     //);
 
-    return new three.Vector2(0,0);
+    return new three.Vector2(0, 0);
 }
 
 export class ServerState {
@@ -54,6 +55,7 @@ export class ServerState {
             switch (e.kind) {
                 case common.PacketKind.PlayerJoin: {
                     const packet = e as common.PlayerJoinPacket;
+                    console.log(`[eQueue]: Player ${packet.id} joined`);
                     this.joinedIds.add(packet.id);
                     break;
                 }
@@ -70,6 +72,7 @@ export class ServerState {
         this.joinedIds.forEach((joinedId) => {
             const joinedPlayer = this.players.get(joinedId);
             if (joinedPlayer !== undefined) {
+                // Notify the joined player about themselves
                 joinedPlayer.ws.send(
                     new common.HelloPacket(
                         joinedPlayer.id,
@@ -80,8 +83,8 @@ export class ServerState {
                 );
                 // Reconstruct the state of the other players
                 this.players.forEach((otherPlayer) => {
+                    // Joined player should already know about themselves
                     if (joinedId !== otherPlayer.id) {
-                        // Joined player should already know about themselves
                         const packet = new common.PlayerJoinPacket(
                             otherPlayer.id,
                             otherPlayer.position.x,
@@ -89,7 +92,6 @@ export class ServerState {
                             otherPlayer.color!.getHex(),
                         );
                         joinedPlayer.ws.send(packet.encode());
-
                         // Send the state of the other players to the joined player
                         if (otherPlayer.moveTarget) {
                             const packet = new common.PlayerMovingPacket(
@@ -107,27 +109,30 @@ export class ServerState {
         // Notifying about who joined
         this.joinedIds.forEach((joinedId) => {
             const joinedPlayer = this.players.get(joinedId);
-            if (joinedPlayer !== undefined) {
-                //This should never happen, but we handling none existing ids for more robustness
-                this.players.forEach((otherPlayer) => {
-                    if (joinedId !== otherPlayer.id) {
-                        const packet = new common.PlayerJoinPacket(
-                            otherPlayer.id,
-                            otherPlayer.position.x,
-                            otherPlayer.position.y,
-                            otherPlayer.color!.getHex(),
-                        );
-                        otherPlayer.ws.send(packet.encode());
-                    }
-                });
-            }
+            // This should never happen, but we handling none existing ids for more robustness
+            if (joinedPlayer === undefined) return;
+
+            this.players.forEach((otherPlayer) => {
+                // Notify the other players about the joined player
+                if (joinedId !== otherPlayer.id) {
+                    otherPlayer.ws.send(
+                        new common.PlayerJoinPacket(
+                            joinedPlayer.id,
+                            joinedPlayer.position.x,
+                            joinedPlayer.position.y,
+                            joinedPlayer.color!.getHex(),
+                        ).encode(),
+                    );
+                }
+            });
         });
 
         // Notify about who left
         this.leftIds.forEach((leftId) => {
             this.players.forEach((otherPlayer) => {
-                const packet = new common.PlayerLeftPacket(leftId);
-                otherPlayer.ws.send(packet.encode());
+                otherPlayer.ws.send(
+                    new common.PlayerLeftPacket(leftId).encode(),
+                );
             });
         });
 
@@ -145,8 +150,15 @@ export class ServerState {
                         packet.targetX,
                         packet.targetY,
                     );
+                    const broadcastPacket = new common.PlayerMovingPacket(
+                        player.id,
+                        packet.targetX,
+                        packet.targetY,
+                    );
                     this.players.forEach((otherPlayer) => {
-                        otherPlayer.ws.send(packet.encode());
+                        if (player.id !== otherPlayer.id) {
+                            otherPlayer.ws.send(broadcastPacket.encode());
+                        }
                     });
                     break;
                 }
@@ -169,27 +181,25 @@ export class ServerState {
                 return;
             }
             const player = this.addPlayer(ws);
-            player.position = randomPlayerPosition();
-            player.color = randomColor();
             console.log(`Player ${player.id} joined`);
             this.eventQueue.add(
                 new common.PlayerJoinPacket(
                     player.id,
                     player.position.x,
                     player.position.y,
-                    player.color.getHex(),
+                    player.color!.getHex(),
                 ),
             );
             ws.addEventListener("message", (e) => {
                 console.log(`Received message from player ${player.id}`);
-                assert(
-                    e.data instanceof Uint8Array,
-                    `Expected binary message`
-                );
-                assert(
-                    e.data.byteLength >= 1,
-                    "Expected non-empty Buffer",
-                );
+                if (!(e.data instanceof Uint8Array)) {
+                    ws.close(1003, "Invalid message");
+                    return;
+                }
+                if (e.data.byteLength < 1) {
+                    ws.close(1003, "Invalid message");
+                    return;
+                }
                 try {
                     const { kind } = common.Packet.decode(e.data);
                     switch (kind) {
@@ -230,6 +240,7 @@ export class ServerState {
 
     public addPlayer(ws: WebSocket): ServerPlayer {
         const player = new ServerPlayer(this.nextPlayerId++, ws);
+        console.log(`Player ${player.id} added`);
         this.players.set(player.id, player);
         return player;
     }
@@ -239,6 +250,8 @@ export class ServerState {
     }
 }
 
-const wss = new WebSocketServer({ port: common.SERVER_PORT });
-console.log(`Server started on port ${common.SERVER_PORT}`);
+const wss = new WebSocketServer({ port: common.SERVER_PORT }, () => {
+    console.log(`Server started on port ${common.SERVER_PORT}`);
+});
+
 new ServerState(wss);

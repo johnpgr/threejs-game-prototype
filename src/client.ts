@@ -95,7 +95,7 @@ class Game {
                 switch (kind) {
                     case common.PacketKind.Hello: {
                         const packet = common.HelloPacket.decode(buf);
-                        console.log("Received hello packet", packet);
+                        console.log(`Connected as player ${packet.id}`);
                         this.state.me = new common.Player(packet.id);
                         this.state.me.position.set(packet.x, packet.y);
                         this.state.me.color = new three.Color(packet.color);
@@ -112,19 +112,22 @@ class Game {
                     }
                     case common.PacketKind.PlayerJoin: {
                         const packet = common.PlayerJoinPacket.decode(buf);
-                        console.log("Received player join packet", packet);
+                        console.log(`Player joined: ${packet.id}`);
                         const player = new common.Player(packet.id);
                         player.position.set(packet.x, packet.y);
                         player.color = new three.Color(packet.color);
                         this.state.players.set(packet.id, player);
                         const playerMesh = common.boxFromColor(player.color);
+                        const playerUI = this.createPlayerUI(player);
                         this.playerTextures.set(player.id, playerMesh);
+                        this.playerUIs.set(player.id, playerUI);
                         this.scene.add(playerMesh);
+                        this.scene.add(playerUI);
                         break;
                     }
                     case common.PacketKind.PlayerLeft: {
                         const packet = common.PlayerLeftPacket.decode(buf);
-                        console.log("Received player left packet", packet);
+                        console.log(`Player left: ${packet.id}`);
                         this.state.players.delete(packet.id);
                         const playerMesh = this.playerTextures.get(packet.id);
                         const playerUI = this.playerUIs.get(packet.id);
@@ -140,9 +143,10 @@ class Game {
                     }
                     case common.PacketKind.PlayerMoving: {
                         const packet = common.PlayerMovingPacket.decode(buf);
-                        console.log("Received player moving packet", packet);
+                        console.log(`Player ${packet.id} moving to ${packet.targetX}, ${packet.targetY}`);
                         const player = this.state.players.get(packet.id);
                         if (!player) {
+                            console.log(this.state.players);
                             console.log(
                                 `Received message for unknown player ${packet.id}`,
                             );
@@ -180,7 +184,7 @@ class Game {
         }
 
         this.renderer.render(scene, camera);
-        this.rendererCss.render(scene, camera);
+        //this.rendererCss.render(scene, camera);
     }
 
     private setupWheelCameraZoom() {
@@ -296,7 +300,7 @@ rendererCss.domElement.style.top = "0";
 rendererCss.domElement.style.pointerEvents = "none";
 document.body.appendChild(rendererCss.domElement);
 
-const DEFAULT_ZOOM_FACTOR = 0.5;
+const DEFAULT_ZOOM_FACTOR = .8;
 let aspect = window.innerWidth / window.innerHeight;
 const d = 10;
 const camera = new three.OrthographicCamera(
