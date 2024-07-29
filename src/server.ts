@@ -4,7 +4,7 @@ import * as common from "./common";
 import { exhaustive } from "./utils";
 
 const MAX_PLAYERS = 10;
-const SERVER_TPS = 30;
+const SERVER_TPS = 60;
 
 export class ServerPlayer extends common.Player {
     constructor(
@@ -61,13 +61,13 @@ export class ServerState {
         ws.binaryType = "arraybuffer";
         const player = this.addPlayer(ws);
         if (!player) return;
+        console.log(`Player ${player.id} connected`);
         this.joinedIds.add(player.id);
         ws.addEventListener("message", (ev) => this.handleMessage(player, ev));
         ws.addEventListener("close", () => this.handleDisconnection(player));
     }
 
     private handleMessage(p: ServerPlayer, ev: MessageEvent) {
-        console.log(`[ws]: Received message from player ${p.id}`);
         if (!(ev.data instanceof Uint8Array) || ev.data.byteLength < 1) {
             p.ws.close(1003, "Invalid message");
             return;
@@ -193,7 +193,6 @@ export class ServerState {
             return null;
         }
         const player = new ServerPlayer(this.nextPlayerId++, ws);
-        console.log(`Player ${player.id} added`);
         this.players.set(player.id, player);
         return player;
     }
