@@ -2,10 +2,11 @@ import * as three from "three";
 import * as addons from "three/addons/renderers/CSS3DRenderer.js";
 import * as common from "./common";
 import { unreachable } from "./utils";
+import Stats from 'three/addons/libs/stats.module.js';
 
 const TPS = 60;
-const GAME_WIDTH = 1400;
-const GAME_HEIGHT = 800;
+const GAME_WIDTH = window.innerWidth;
+const GAME_HEIGHT = window.innerHeight;
 
 class State {
     public me: common.Player | undefined;
@@ -21,7 +22,7 @@ class State {
             common.updatePlayerPos(p, deltaTime);
             const playerMesh = textures.get(p.id);
             if (playerMesh) {
-                playerMesh.position.set(p.position.x, 0, p.position.y);
+                playerMesh.position.set(p.position.x, 0.01, p.position.y);
             }
         });
     }
@@ -42,6 +43,7 @@ class Game {
         public camera: three.Camera,
         public ws: WebSocket,
         public state: State,
+        public stats: Stats
     ) {
         const outlineGeometry = new three.BufferGeometry();
         //prettier-ignore
@@ -64,7 +66,7 @@ class Game {
             outlineGeometry,
             outlineMaterial,
         );
-        this.cellHighlightMesh.position.y = 0;
+        this.cellHighlightMesh.position.y = 0.01;
         this.cellHighlightMesh.visible = false;
         this.scene.add(this.cellHighlightMesh);
         this.setupCellRaycasting();
@@ -200,6 +202,7 @@ class Game {
     }
 
     public animate() {
+        this.stats.begin();
         this.renderer.setAnimationLoop(this.animate.bind(this));
         for (const [id, ui] of this.playerUIs.entries()) {
             const player = this.state.players.get(id);
@@ -217,6 +220,7 @@ class Game {
 
         this.renderer.render(scene, camera);
         //this.rendererCss.render(scene, camera);
+        this.stats.end();
     }
 
     private setupWheelCameraZoom() {
@@ -288,16 +292,17 @@ class Game {
         this.mousePos.y = -(mouseY / rect.height) * 2 + 1;
 
         this.raycaster.setFromCamera(this.mousePos, this.camera);
-        const intersects = this.raycaster.intersectObject(grid);
+        const plane = new three.Plane(new three.Vector3(0, 1, 0), 0);
+        const intersectionPoint = new three.Vector3();
+        this.raycaster.ray.intersectPlane(plane, intersectionPoint);
 
-        if (intersects.length > 0) {
-            const point = intersects[0].point;
-            const cellX = Math.round(point.x);
-            const cellZ = Math.round(point.z);
+        if (intersectionPoint) {
+            const cellX = Math.round(intersectionPoint.x);
+            const cellZ = Math.round(intersectionPoint.z);
             callback(new three.Vector2(cellX, cellZ));
-            return;
+        } else {
+            callback(null);
         }
-        callback(null);
     }
 
     private createPlayerUI(player: common.Player): addons.CSS3DObject {
@@ -309,6 +314,7 @@ class Game {
         div.style.borderRadius = "5px";
         div.style.fontFamily = "monospace";
         div.style.fontSize = "18px";
+        div.style.pointerEvents = "none";
 
         const updateUI = () => {
             div.innerHTML = `<pre>${JSON.stringify(player, null, 4)}</pre>`;
@@ -331,22 +337,17 @@ const scene = new three.Scene();
 const renderer = new three.WebGLRenderer();
 renderer.setSize(GAME_WIDTH, GAME_HEIGHT);
 renderer.setClearColor(0x202020);
-renderer.domElement.style.position = "absolute";
-renderer.domElement.style.left = "50%";
-renderer.domElement.style.top = "50%";
-renderer.domElement.style.transform = "translate(-50%, -50%)";
 document.body.appendChild(renderer.domElement);
 
 const rendererCss = new addons.CSS3DRenderer();
 rendererCss.setSize(GAME_WIDTH, GAME_HEIGHT);
-rendererCss.domElement.style.position = "absolute";
-rendererCss.domElement.style.left = "50%";
-rendererCss.domElement.style.top = "50%";
-rendererCss.domElement.style.transform = "translate(-50%, -50%)";
 rendererCss.domElement.style.pointerEvents = "none";
+rendererCss.domElement.style.position = "absolute";
+rendererCss.domElement.style.top = "0";
+rendererCss.domElement.style.left = "0";
 document.body.appendChild(rendererCss.domElement);
 
-const DEFAULT_ZOOM_FACTOR = 0.8;
+const DEFAULT_ZOOM_FACTOR = 1.0;
 let aspect = GAME_WIDTH / GAME_HEIGHT;
 const d = 10;
 const camera = new three.OrthographicCamera(
@@ -360,19 +361,43 @@ const camera = new three.OrthographicCamera(
 camera.position.set(d, d, d);
 camera.lookAt(scene.position);
 
+const map = new common.GameMap();
+for (let x = 0; x < common.MAP_WIDTH; x++) {
+    map.setTile(x, 0, common.TileKind.Wall, new three.Color(0x888888));
+}
+for (let y = 0; y < common.MAP_HEIGHT; y++) {
+    map.setTile(0, y, common.TileKind.Wall, new three.Color(0x888888));
+}
+for (let x = 0; x < common.MAP_WIDTH; x++) {
+    map.setTile(x, common.MAP_HEIGHT - 1, common.TileKind.Wall, new three.Color(0x888888));
+}
+for (let y = 0; y < common.MAP_HEIGHT; y++) {
+    map.setTile(common.MAP_WIDTH - 1, y, common.TileKind.Wall, new three.Color(0x888888));
+}
+map.createMeshes(scene);
+
 const grid = new three.GridHelper(
-    common.MAP_SIZE.x,
-    common.MAP_SIZE.y,
+    common.MAP_WIDTH,
+    common.MAP_HEIGHT,
     0x888888,
 );
-grid.position.y = -1;
+grid.material.depthWrite = false;
 scene.add(grid);
+
+const stats = new Stats();
+stats.dom.style.position = 'absolute';
+stats.dom.style.top = '0';
+stats.dom.style.left = '0';
+stats.dom.style.pointerEvents = "none";
+stats.dom.style.zIndex = "999";
+// Add it to the document
+document.body.appendChild(stats.dom);
 
 const ws = new WebSocket(
     `ws://${window.location.hostname}:${common.SERVER_PORT}`,
 );
 const state = new State();
-const game = new Game(scene, renderer, rendererCss, camera, ws, state);
+const game = new Game(scene, renderer, rendererCss, camera, ws, state, stats);
 game.animate();
 
 //@ts-ignore
