@@ -254,10 +254,20 @@ class Game {
         e: MouseEvent,
         cb: (cell: three.Vector2 | null) => void,
     ) {
-        this.mousePos.x = (e.clientX / window.innerWidth) * 2 - 1;
-        this.mousePos.y = -(e.clientY / window.innerHeight) * 2 + 1;
-        this.raycaster.setFromCamera(this.mousePos, camera);
+        // Get the bounding rectangle of the renderer's DOM element
+        const rect = this.renderer.domElement.getBoundingClientRect();
+
+        // Calculate mouse position relative to the canvas
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        // Convert to normalized device coordinates (-1 to +1)
+        this.mousePos.x = (mouseX / rect.width) * 2 - 1;
+        this.mousePos.y = -(mouseY / rect.height) * 2 + 1;
+
+        this.raycaster.setFromCamera(this.mousePos, this.camera);
         const intersects = this.raycaster.intersectObject(grid);
+
         if (intersects.length > 0) {
             const point = intersects[0].point;
             const cellX = Math.round(point.x);
@@ -295,21 +305,30 @@ class Game {
     }
 }
 
+const GAME_WIDTH = 1400;
+const GAME_HEIGHT = 800;
+
 const scene = new three.Scene();
 const renderer = new three.WebGLRenderer();
-renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setSize(GAME_WIDTH, GAME_HEIGHT);
 renderer.setClearColor(0x202020);
+renderer.domElement.style.position = "absolute";
+renderer.domElement.style.left = "50%";
+renderer.domElement.style.top = "50%";
+renderer.domElement.style.transform = "translate(-50%, -50%)";
 document.body.appendChild(renderer.domElement);
 
 const rendererCss = new addons.CSS3DRenderer();
-rendererCss.setSize(window.innerWidth, window.innerHeight);
+rendererCss.setSize(GAME_WIDTH, GAME_HEIGHT);
 rendererCss.domElement.style.position = "absolute";
-rendererCss.domElement.style.top = "0";
+rendererCss.domElement.style.left = "50%";
+rendererCss.domElement.style.top = "50%";
+rendererCss.domElement.style.transform = "translate(-50%, -50%)";
 rendererCss.domElement.style.pointerEvents = "none";
 document.body.appendChild(rendererCss.domElement);
 
 const DEFAULT_ZOOM_FACTOR = 0.8;
-let aspect = window.innerWidth / window.innerHeight;
+let aspect = GAME_WIDTH / GAME_HEIGHT;
 const d = 10;
 const camera = new three.OrthographicCamera(
     -d * aspect * DEFAULT_ZOOM_FACTOR,
@@ -321,19 +340,6 @@ const camera = new three.OrthographicCamera(
 );
 camera.position.set(d, d, d);
 camera.lookAt(scene.position);
-
-window.addEventListener(
-    "resize",
-    () => {
-        aspect = window.innerWidth / window.innerHeight;
-        camera.left = -d * aspect * DEFAULT_ZOOM_FACTOR;
-        camera.right = d * aspect * DEFAULT_ZOOM_FACTOR;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        rendererCss.setSize(window.innerWidth, window.innerHeight);
-    },
-    false,
-);
 
 const grid = new three.GridHelper(
     common.MAP_SIZE.x,
