@@ -1,15 +1,17 @@
+import Bun from "bun";
 import * as three from "three";
-import { type WebSocket, type MessageEvent, WebSocketServer } from "ws";
 import * as common from "./common";
-import { exhaustive } from "./utils";
+import { assert, unreachable } from "./utils";
 
 const MAX_PLAYERS = 10;
 const SERVER_TPS = 60;
 
+export type ServerSocket = Bun.ServerWebSocket<{ id?: number }>;
+
 export class ServerPlayer extends common.Player {
     constructor(
         id: number,
-        public ws: WebSocket,
+        public ws: ServerSocket,
     ) {
         super(id);
         this.position = randomPlayerPosition();
@@ -18,28 +20,40 @@ export class ServerPlayer extends common.Player {
 }
 
 function randomColor(): three.Color {
-    return new three.Color(Math.random() * 0xffffff);
+    return new three.Color().setHSL(Math.random(), 1, 0.5);
 }
 
 function randomPlayerPosition(): three.Vector2 {
-    //return new three.Vector2(
-    //    Math.floor(Math.random() * common.MAP_SIZE.x),
-    //    Math.floor(Math.random() * common.MAP_SIZE.y),
-    //);
-    return new three.Vector2(0, 0);
+    const signX = Math.random() < 0.5 ? -1 : 1;
+    const signY = Math.random() < 0.5 ? -1 : 1;
+    return new three.Vector2(
+        Math.floor((Math.random() * common.MAP_HEIGHT) / 2 - 1) * signX,
+        Math.floor((Math.random() * common.MAP_WIDTH) / 2 - 1) * signY,
+    );
 }
 
 export class ServerState {
-    public nextPlayerId = 0;
-    public players = new Map<number, ServerPlayer>();
-    public eventQueue = new Set<common.Packet>();
-    public joinedIds = new Set<number>();
-    public leftIds = new Set<number>();
-    public moves = new Set<common.PlayerMovingPacket>();
+    private nextPlayerId = 0;
+    private players = new Map<number, ServerPlayer>();
+    private joinedIds = new Set<number>();
+    private leftIds = new Set<number>();
+    private moves = new Set<common.PlayerMovingPacket>();
     private lastTimestamp = performance.now();
 
-    constructor(public wss: WebSocketServer) {
-        wss.on("connection", this.handleConnection.bind(this));
+    constructor() {
+        Bun.serve<{ id?: number }>({
+            port: common.SERVER_PORT,
+            fetch(request, server) {
+                server.upgrade(request, { data: {} });
+                return;
+            },
+            websocket: {
+                open: this.handleConnection.bind(this),
+                message: this.handleMessage.bind(this),
+                close: this.handleDisconnection.bind(this),
+            },
+        });
+        console.log(`Server started on port ${common.SERVER_PORT}`);
         setTimeout(this.tick.bind(this), 1000 / SERVER_TPS);
     }
 
@@ -57,48 +71,49 @@ export class ServerState {
         );
     }
 
-    private handleConnection(ws: WebSocket) {
-        ws.binaryType = "arraybuffer";
+    private handleConnection(ws: ServerSocket) {
+        ws.binaryType = "uint8array";
         const player = this.addPlayer(ws);
         if (!player) return;
         console.log(`Player ${player.id} connected`);
         this.joinedIds.add(player.id);
-        ws.addEventListener("message", (ev) => this.handleMessage(player, ev));
-        ws.addEventListener("close", () => this.handleDisconnection(player));
     }
 
-    private handleMessage(p: ServerPlayer, ev: MessageEvent) {
-        if (!(ev.data instanceof Uint8Array) || ev.data.byteLength < 1) {
-            p.ws.close(1003, "Invalid message");
+    private handleMessage(ws: ServerSocket, message: Buffer) {
+        if (!(message instanceof Uint8Array) || message.byteLength < 1) {
+            console.error("Invalid message received", message);
+            ws.close(1003, "Invalid message");
             return;
         }
         try {
-            const { kind } = common.Packet.decode(ev.data);
+            const { kind } = common.Packet.decode(message);
             switch (kind) {
                 case common.PacketKind.PlayerMoving:
-                    this.handlePlayerMoving(ev.data);
+                    this.handlePlayerMoving(message);
                     break;
-                case common.PacketKind.Hello:
-                case common.PacketKind.PlayerJoinBatch:
-                case common.PacketKind.PlayerLeftBatch:
-                case common.PacketKind.PlayerMovingBatch:
-                    // The only packet that server expects from client is PlayerMoving
-                    throw new Error(
-                        `Unexpected packet kind: ${common.PacketKind[kind]}`,
-                    );
                 default:
-                    exhaustive(kind);
+                    // The only packet that server expects from client is PlayerMoving
+                    unreachable(
+                        `Unexpected packet kind on the server: ${kind}`,
+                    );
             }
         } catch (error) {
             console.error("Error handling message:", error);
-            p.ws.close(1003, "Invalid message");
+            ws.close(1003, "Invalid message");
         }
     }
 
-    private handleDisconnection(p: ServerPlayer) {
-        console.log(`Player ${p.id} disconnected`);
-        this.players.delete(p.id);
-        this.leftIds.add(p.id);
+    private handleDisconnection(
+        ws: ServerSocket,
+        code: number,
+        reason: string,
+    ) {
+        assert(ws.data.id !== undefined, "Disconnected player id was not set");
+        console.log(
+            `Player ${ws.data.id} disconnected; code: ${code}; reason: ${reason}`,
+        );
+        this.players.delete(ws.data.id);
+        this.leftIds.add(ws.data.id);
     }
 
     private handlePlayerMoving(data: Uint8Array) {
@@ -187,19 +202,16 @@ export class ServerState {
         this.moves.clear();
     }
 
-    private addPlayer(ws: WebSocket): ServerPlayer | null {
+    private addPlayer(ws: ServerSocket): ServerPlayer | null {
         if (this.players.size >= MAX_PLAYERS) {
             ws.close(1000, "Server is full");
             return null;
         }
         const player = new ServerPlayer(this.nextPlayerId++, ws);
         this.players.set(player.id, player);
+        player.ws.data.id = player.id;
         return player;
     }
 }
 
-const wss = new WebSocketServer({ port: common.SERVER_PORT }, () => {
-    console.log(`Server started on port ${common.SERVER_PORT}`);
-});
-
-new ServerState(wss);
+new ServerState();

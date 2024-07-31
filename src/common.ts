@@ -3,6 +3,7 @@ import typia from "typia";
 import type { i32 } from "./types";
 import type * as ws from "ws";
 import { assert } from "./utils";
+import { ServerSocket } from "./server";
 
 export const SERVER_PORT = 6970;
 export const MAP_WIDTH = 24;
@@ -14,6 +15,7 @@ export function isServer(): boolean {
 
 export enum PacketKind {
     Hello,
+    GameMap,
     PlayerJoinBatch,
     PlayerLeftBatch,
     PlayerMoving,
@@ -48,7 +50,8 @@ export class HelloPacket implements Packet {
 
     public static decode(data: Uint8Array): HelloPacket {
         const packet = HelloPacket._decode(data);
-        return new HelloPacket(packet.id, packet.x, packet.y, packet.color);
+        Object.setPrototypeOf(packet, HelloPacket.prototype);
+        return packet;
     }
 
     public encode(): Uint8Array {
@@ -74,7 +77,8 @@ export class PlayerJoinBatchPacket implements Packet {
 
     public static decode(data: Uint8Array): PlayerJoinBatchPacket {
         const packet = PlayerJoinBatchPacket._decode(data);
-        return new PlayerJoinBatchPacket(packet.players);
+        Object.setPrototypeOf(packet, PlayerJoinBatchPacket.prototype);
+        return packet;
     }
 
     public encode(): Uint8Array {
@@ -97,7 +101,8 @@ export class PlayerLeftBatchPacket implements Packet {
 
     public static decode(data: Uint8Array): PlayerLeftBatchPacket {
         const packet = PlayerLeftBatchPacket._decode(data);
-        return new PlayerLeftBatchPacket(packet.playerIds);
+        Object.setPrototypeOf(packet, PlayerLeftBatchPacket.prototype);
+        return packet;
     }
 
     public encode(): Uint8Array {
@@ -124,11 +129,8 @@ export class PlayerMovingPacket implements Packet, PlayerMove {
 
     public static decode(data: Uint8Array): PlayerMovingPacket {
         const packet = PlayerMovingPacket._decode(data);
-        return new PlayerMovingPacket(
-            packet.id,
-            packet.targetX,
-            packet.targetY,
-        );
+        Object.setPrototypeOf(packet, PlayerMovingPacket.prototype);
+        return packet;
     }
 
     public encode(): Uint8Array {
@@ -147,7 +149,8 @@ export class PlayerMovingBatchPacket implements Packet {
 
     public static decode(data: Uint8Array): PlayerMovingBatchPacket {
         const packet = PlayerMovingBatchPacket._decode(data);
-        return new PlayerMovingBatchPacket(packet.moves);
+        Object.setPrototypeOf(packet, PlayerMovingBatchPacket.prototype);
+        return packet;
     }
 
     public encode(): Uint8Array {
@@ -156,7 +159,7 @@ export class PlayerMovingBatchPacket implements Packet {
 }
 
 export function sendPacket<T extends Packet>(
-    ws: WebSocket | ws.WebSocket,
+    ws: WebSocket | ServerSocket,
     packet: T,
 ) {
     ws.send(packet.encode());
@@ -231,17 +234,34 @@ export enum TileKind {
     DestroyedWall,
 }
 
-export class Tile {
-    public mesh: three.Mesh | null = null;
+/**
+ * Vector2 coordinate as a string to use in maps and avoid object creation
+ */
+export type Vector2Str = `${number},${number}`;
 
+export class Tile {
     constructor(
         public x: number,
         public y: number,
         public kind: TileKind,
-        public color: three.Color = new three.Color(0x000000),
+        //TODO: For now using only colors, however this should be changed to textures
+        public color: string | null = null
     ) {}
 
-    public static Wall(x: number, y: number, color: three.Color): Tile {
+    private static _encode = typia.protobuf.createEncode<Tile>();
+    private static _decode = typia.protobuf.createDecode<Tile>();
+
+    public encode(): Uint8Array {
+        return Tile._encode(this);
+    }
+
+    public static decode(data: Uint8Array): Tile {
+        const tile = Tile._decode(data);
+        Object.setPrototypeOf(tile, Tile.prototype); // Avoids having to create a new object
+        return tile
+    }
+
+    public static Wall(x: number, y: number, color: string): Tile {
         return new Tile(x, y, TileKind.Wall, color);
     }
 
@@ -249,15 +269,17 @@ export class Tile {
         return new Tile(x, y, TileKind.Floor);
     }
 
-    public destroyWall() {
+    public destroyWall(tileMap: Map<Vector2Str, three.Mesh>) {
+        const mesh = tileMap.get(`${this.x},${this.y}`);
         assert(this.kind === TileKind.Wall, "Tried to destroy a non-wall tile");
-        assert(this.mesh !== null, "Tile mesh is null");
+        assert(mesh !== undefined, "Tile mesh doesn't exist");
         this.kind = TileKind.DestroyedWall;
-        this.mesh!.scale.y = 0.1;
+        mesh!.scale.y = 0.1;
     }
 
     createMesh(mapWidth: number, mapHeight: number): three.Mesh {
-        assert(!isServer(), "Cannot create mesh on server");
+        assert(!isServer(), "Cannot create meshes on server");
+        assert(this.color !== null, "Tile color is null");
         let geometry: three.BufferGeometry;
         let material: three.Material;
 
@@ -279,57 +301,83 @@ export class Tile {
                 }); // Invisible for empty tiles
         }
 
-        this.mesh = new three.Mesh(geometry, material);
+        const mesh = new three.Mesh(geometry, material);
 
         // Adjust the position to center the map
         const adjustedX = this.x - mapWidth / 2 + 0.5;
         const adjustedY = -this.y + mapHeight / 2 - 0.5; // Invert Y-axis
 
-        this.mesh.position.set(adjustedX, .5, adjustedY); // Use adjusted Y for z in 3D space
+        mesh.position.set(adjustedX, 0.5, adjustedY); // Use adjusted Y for z in 3D space
 
         if (this.kind === TileKind.Floor) {
-            this.mesh.rotation.x = -Math.PI / 2; // Rotate floor to lay flat
+            mesh.rotation.x = -Math.PI / 2; // Rotate floor to lay flat
         }
 
-        return this.mesh;
+        return mesh;
     }
 }
 
-export class GameMap {
+export class GameMap implements Packet {
+    public kind = PacketKind.GameMap;
+    public tiles: Tile[];
+
     constructor(
-        public width: number = MAP_HEIGHT,
-        public height: number = MAP_WIDTH,
-        public tiles: Tile[][] = [],
+        public width: number = MAP_WIDTH,
+        public height: number = MAP_HEIGHT
     ) {
+        this.tiles = new Array(width * height);
         for (let y = 0; y < height; y++) {
-            tiles[y] = [];
             for (let x = 0; x < width; x++) {
-                tiles[y][x] = new Tile(x, y, TileKind.Empty);
+                this.setTile(x, y, TileKind.Empty);
             }
         }
     }
 
-    public setTile(x: number, y: number, kind: TileKind, color: three.Color) {
+    public index(x: number, y: number): number {
+        return y * this.width + x;
+    }
+
+    public setTile(x: number, y: number, kind: TileKind, color: string | null = null) {
         assert(
             x >= 0 && x < this.width && y >= 0 && y < this.height,
-            "Tile out of bounds",
+            "Tile out of bounds"
         );
-        this.tiles[y][x] = new Tile(x, y, kind, color);
+        this.tiles[this.index(x, y)] = new Tile(x, y, kind, color);
     }
 
     public getTile(x: number, y: number): Tile | null {
-        return this.tiles[y][x] ?? null;
+        if (x < 0 || x >= this.width || y < 0 || y >= this.height) {
+            return null;
+        }
+        return this.tiles[this.index(x, y)];
     }
 
     public createMeshes(scene: three.Scene) {
+        assert(!isServer(), "Cannot create meshes on server");
         for (let y = 0; y < this.height; y++) {
             for (let x = 0; x < this.width; x++) {
-                const tile = this.tiles[y][x];
-                if (tile.kind !== TileKind.Empty) {
+                const tile = this.getTile(x, y);
+                if (tile && tile.kind !== TileKind.Empty) {
                     const mesh = tile.createMesh(this.width, this.height);
                     scene.add(mesh);
                 }
             }
         }
     }
+
+    public encode(): Uint8Array {
+        return GameMap._encode(this);
+    }
+
+    public static decode(data: Uint8Array): GameMap {
+        const map = GameMap._decode(data);
+        map.tiles.forEach((tile) => {
+            Object.setPrototypeOf(tile, Tile.prototype);
+        });
+        Object.setPrototypeOf(map, GameMap.prototype);
+        return map;
+    }
+
+    private static _encode = typia.protobuf.createEncode<GameMap>();
+    private static _decode = typia.protobuf.createDecode<GameMap>();
 }

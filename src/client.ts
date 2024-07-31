@@ -1,7 +1,7 @@
 import * as three from "three";
 import * as addons from "three/addons/renderers/CSS3DRenderer.js";
 import * as common from "./common";
-import { unreachable } from "./utils";
+import { objectToFriendlyString, unreachable } from "./utils";
 import Stats from "three/addons/libs/stats.module.js";
 
 const TPS = 60;
@@ -221,7 +221,7 @@ class Game {
             ui.quaternion.copy(this.camera.quaternion);
         }
         this.renderer.render(this.scene, this.camera);
-        //this.rendererCss.render(scene, camera);
+        this.rendererCss.render(this.scene, this.camera);
         this.stats.end();
     }
 
@@ -319,7 +319,21 @@ class Game {
         div.style.pointerEvents = "none";
 
         const updateUI = () => {
-            div.innerHTML = `<pre>${JSON.stringify(player, null, 4)}</pre>`;
+            div.innerHTML = `<pre>${objectToFriendlyString({
+                id: player.id,
+                position: {
+                    x: player.position.x.toFixed(2),
+                    y: player.position.y.toFixed(2),
+                },
+                color: { hsl: player.color?.getHexString() },
+                moveSpeed: player.speed.toFixed(2),
+                moveTarget: player.moveTarget
+                    ? {
+                          x: player.moveTarget.x.toFixed(2),
+                          y: player.moveTarget.y.toFixed(2),
+                      }
+                    : null,
+            })}</pre>`;
         };
 
         updateUI();
@@ -362,31 +376,6 @@ function main() {
     );
     camera.position.set(CAMERA_DISTANCE, CAMERA_DISTANCE, CAMERA_DISTANCE);
     camera.lookAt(scene.position);
-
-    const map = new common.GameMap();
-    for (let x = 0; x < common.MAP_WIDTH; x++) {
-        map.setTile(x, 0, common.TileKind.Wall, new three.Color(0x888888));
-    }
-    for (let y = 0; y < common.MAP_HEIGHT; y++) {
-        map.setTile(0, y, common.TileKind.Wall, new three.Color(0x888888));
-    }
-    for (let x = 0; x < common.MAP_WIDTH; x++) {
-        map.setTile(
-            x,
-            common.MAP_HEIGHT - 1,
-            common.TileKind.Wall,
-            new three.Color(0x888888),
-        );
-    }
-    for (let y = 0; y < common.MAP_HEIGHT; y++) {
-        map.setTile(
-            common.MAP_WIDTH - 1,
-            y,
-            common.TileKind.Wall,
-            new three.Color(0x888888),
-        );
-    }
-    map.createMeshes(scene);
 
     const grid = new three.GridHelper(
         common.MAP_WIDTH,
