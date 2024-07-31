@@ -15,7 +15,6 @@ export function isServer(): boolean {
 
 export enum PacketKind {
     Hello,
-    GameMap,
     PlayerJoinBatch,
     PlayerLeftBatch,
     PlayerMoving,
@@ -43,6 +42,7 @@ export class HelloPacket implements Packet {
         public x: i32,
         public y: i32,
         public color: i32,
+        public map: GameMap,
     ) {}
 
     private static _encode = typia.protobuf.createEncode<HelloPacket>();
@@ -51,6 +51,7 @@ export class HelloPacket implements Packet {
     public static decode(data: Uint8Array): HelloPacket {
         const packet = HelloPacket._decode(data);
         Object.setPrototypeOf(packet, HelloPacket.prototype);
+        Object.setPrototypeOf(packet.map, GameMap.prototype);
         return packet;
     }
 
@@ -158,26 +159,6 @@ export class PlayerMovingBatchPacket implements Packet {
     }
 }
 
-export class GameMapPacket implements Packet {
-    public kind = PacketKind.GameMap;
-
-    constructor(public map: GameMap) {}
-
-    private static _encode = typia.protobuf.createEncode<GameMapPacket>();
-    private static _decode = typia.protobuf.createDecode<GameMapPacket>();
-
-    public static decode(data: Uint8Array): GameMapPacket {
-        const packet = GameMapPacket._decode(data);
-        Object.setPrototypeOf(packet, GameMapPacket.prototype);
-        Object.setPrototypeOf(packet.map, GameMap.prototype);
-        return packet;
-    }
-
-    public encode(): Uint8Array {
-        return GameMapPacket._encode(this);
-    }
-}
-
 export function sendPacket<T extends Packet>(
     ws: WebSocket | ServerSocket,
     packet: T,
@@ -261,11 +242,11 @@ export type Vector2Str = `${number},${number}`;
 
 export class Tile {
     constructor(
-        public x: number,
-        public y: number,
+        public x: i32,
+        public y: i32,
         public kind: TileKind,
         //TODO: For now using only colors, however this should be changed to textures
-        public color: string | null = null
+        public color: string | null = null,
     ) {}
 
     private static _encode = typia.protobuf.createEncode<Tile>();
@@ -278,7 +259,7 @@ export class Tile {
     public static decode(data: Uint8Array): Tile {
         const tile = Tile._decode(data);
         Object.setPrototypeOf(tile, Tile.prototype); // Avoids having to create a new object
-        return tile
+        return tile;
     }
 
     public static Wall(x: number, y: number, color: string): Tile {
@@ -296,53 +277,14 @@ export class Tile {
         this.kind = TileKind.DestroyedWall;
         mesh!.scale.y = 0.1;
     }
-
-    createMesh(mapWidth: number, mapHeight: number): three.Mesh {
-        assert(!isServer(), "Cannot create meshes on server");
-        assert(this.color !== null, "Tile color is null");
-        let geometry: three.BufferGeometry;
-        let material: three.Material;
-
-        switch (this.kind) {
-            case TileKind.Wall:
-                geometry = new three.BoxGeometry(1, 1, 1);
-                material = new three.MeshBasicMaterial({ color: this.color });
-                break;
-            case TileKind.Floor:
-                geometry = new three.PlaneGeometry(1, 1);
-                material = new three.MeshBasicMaterial({ color: this.color });
-                break;
-            default:
-                geometry = new three.PlaneGeometry(1, 1);
-                material = new three.MeshBasicMaterial({
-                    color: 0x000000,
-                    transparent: true,
-                    opacity: 0,
-                }); // Invisible for empty tiles
-        }
-
-        const mesh = new three.Mesh(geometry, material);
-
-        // Adjust the position to center the map
-        const adjustedX = this.x - mapWidth / 2 + 0.5;
-        const adjustedY = -this.y + mapHeight / 2 - 0.5; // Invert Y-axis
-
-        mesh.position.set(adjustedX, 0.5, adjustedY); // Use adjusted Y for z in 3D space
-
-        if (this.kind === TileKind.Floor) {
-            mesh.rotation.x = -Math.PI / 2; // Rotate floor to lay flat
-        }
-
-        return mesh;
-    }
 }
 
 export class GameMap {
     public tiles: Tile[];
 
     constructor(
-        public width: number = MAP_WIDTH,
-        public height: number = MAP_HEIGHT
+        public width: i32 = MAP_WIDTH,
+        public height: i32 = MAP_HEIGHT,
     ) {
         this.tiles = new Array(width * height);
         for (let y = 0; y < height; y++) {
@@ -352,14 +294,37 @@ export class GameMap {
         }
     }
 
+    public static random(
+        width: i32 = MAP_WIDTH,
+        height: i32 = MAP_HEIGHT,
+    ): GameMap {
+        const map = new GameMap(width, height);
+
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const kind =
+                    Math.random() < 0.2 ? TileKind.Wall : TileKind.Floor;
+                const color = kind === TileKind.Wall ? "gray" : "darkgray";
+                map.setTile(x, y, kind, color);
+            }
+        }
+
+        return map;
+    }
+
     public index(x: number, y: number): number {
         return y * this.width + x;
     }
 
-    public setTile(x: number, y: number, kind: TileKind, color: string | null = null) {
+    public setTile(
+        x: number,
+        y: number,
+        kind: TileKind,
+        color: string | null = null,
+    ) {
         assert(
             x >= 0 && x < this.width && y >= 0 && y < this.height,
-            "Tile out of bounds"
+            "Tile out of bounds",
         );
         this.tiles[this.index(x, y)] = new Tile(x, y, kind, color);
     }
@@ -377,7 +342,48 @@ export class GameMap {
             for (let x = 0; x < this.width; x++) {
                 const tile = this.getTile(x, y);
                 if (tile && tile.kind !== TileKind.Empty) {
-                    const mesh = tile.createMesh(this.width, this.height);
+                    assert(!isServer(), "Cannot create meshes on server");
+                    assert(tile.color !== null, "Tile color is null");
+                    let geometry: three.BufferGeometry;
+                    let material: three.Material;
+                    let y = 0;
+
+                    switch (tile.kind) {
+                        case TileKind.Wall:
+                            geometry = new three.BoxGeometry(1, 1, 1);
+                            material = new three.MeshBasicMaterial({
+                                color: tile.color,
+                            });
+                            y = 0.5;
+                            break;
+                        case TileKind.Floor:
+                            geometry = new three.PlaneGeometry(1, 1);
+                            material = new three.MeshBasicMaterial({
+                                color: tile.color,
+                            });
+                            break;
+                        default:
+                            geometry = new three.PlaneGeometry(1, 1);
+                            material = new three.MeshBasicMaterial({
+                                color: 0x000000,
+                                transparent: true,
+                                opacity: 0,
+                            }); // Invisible for empty tiles
+                    }
+
+                    const mesh = new three.Mesh(geometry, material);
+
+                    // Adjust the position to center the map
+                    const adjustedX = tile.x - this.width / 2 + 0.5;
+                    const adjustedY = -tile.y + this.height / 2 - 0.5; // Invert Y-axis
+
+                    mesh.position.set(adjustedX, y, adjustedY); // Use adjusted Y for z in 3D space
+                    mesh.renderOrder = -1;
+
+                    if (tile.kind === TileKind.Floor) {
+                        mesh.rotation.x = -Math.PI / 2; // Rotate floor to lay flat
+                    }
+
                     scene.add(mesh);
                 }
             }

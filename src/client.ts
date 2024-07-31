@@ -5,11 +5,8 @@ import { objectToFriendlyString, unreachable } from "./utils";
 import Stats from "three/addons/libs/stats.module.js";
 
 const TPS = 60;
-const GAME_WIDTH = window.innerWidth;
-const GAME_HEIGHT = window.innerHeight;
 const DEFAULT_ZOOM_FACTOR = 1.0;
 const CAMERA_DISTANCE = 10;
-let aspect = GAME_WIDTH / GAME_HEIGHT;
 
 class State {
     public me: common.Player | undefined;
@@ -38,6 +35,10 @@ class State {
 }
 
 namespace Game {
+    let zoomFactor = 1;
+    let screenWidth = window.innerWidth;
+    let screenHeight = window.innerHeight;
+    let aspect = screenWidth / screenHeight;
     const scene = new three.Scene();
     const ws = createWs();
     const stats = createStats();
@@ -49,20 +50,33 @@ namespace Game {
     const state = new State(playerTextures);
     const raycaster = new three.Raycaster();
     const mousePos = new three.Vector2();
-    let zoomFactor = 1;
 
     export function start() {
         startGrid();
+        startResizeListener();
         startMouseCellRaycasting();
         startMouseWheelCameraZoom();
         setInterval(state.tick, 1000 / TPS);
         animate();
     }
 
+    function startResizeListener() {
+        window.document.addEventListener("resize", () => {
+            screenWidth = window.innerWidth;
+            screenHeight = window.innerHeight;
+            aspect = screenWidth / screenHeight;
+            renderer.setSize(screenWidth, screenHeight);
+            rendererCss.setSize(screenWidth, screenHeight);
+            camera.left = -CAMERA_DISTANCE * aspect * zoomFactor;
+            camera.right = CAMERA_DISTANCE * aspect * zoomFactor;
+            camera.updateProjectionMatrix();
+        });
+    }
+
     export function startGrid() {
         const grid = new three.GridHelper(
-            common.MAP_WIDTH,
-            common.MAP_HEIGHT,
+            common.MAP_WIDTH*2,
+            common.MAP_HEIGHT*2,
             0x888888,
         );
         grid.material.depthWrite = false;
@@ -86,7 +100,7 @@ namespace Game {
 
     function createRendererCss(): addons.CSS3DRenderer {
         const rendererCss = new addons.CSS3DRenderer();
-        rendererCss.setSize(GAME_WIDTH, GAME_HEIGHT);
+        rendererCss.setSize(screenWidth, screenHeight);
         rendererCss.domElement.style.pointerEvents = "none";
         rendererCss.domElement.style.position = "absolute";
         rendererCss.domElement.style.top = "0";
@@ -110,7 +124,7 @@ namespace Game {
 
     function createRenderer(): three.WebGLRenderer {
         const renderer = new three.WebGLRenderer();
-        renderer.setSize(GAME_WIDTH, GAME_HEIGHT);
+        renderer.setSize(screenWidth, screenHeight);
         renderer.setClearColor(0x000000);
         document.body.appendChild(renderer.domElement);
 
@@ -165,13 +179,13 @@ namespace Game {
                     handlePlayerMoving(buf);
                     break;
                 }
-                case common.PacketKind.PlayerMoving: {
+                default: {
                     unreachable("Unexpected packet kind");
                 }
             }
         } catch (error) {
             console.error("Error handling message:", error);
-            ws.close(1003, "Invalid message");
+            ws.close(1000, "Invalid message");
         }
     }
 
@@ -188,6 +202,7 @@ namespace Game {
         playerUIs.set(state.me.id, playerUI);
         scene.add(playerMesh);
         scene.add(playerUI);
+        packet.map.createMeshes(scene);
     }
 
     function handlePlayerJoin(buf: Uint8Array) {
@@ -258,7 +273,7 @@ namespace Game {
             ui.quaternion.copy(camera.quaternion);
         }
         renderer.render(scene, camera);
-        rendererCss.render(scene, camera);
+        //rendererCss.render(scene, camera);
         stats.end();
     }
 
@@ -296,13 +311,12 @@ namespace Game {
         );
         const outlineMaterial = new three.LineBasicMaterial({
             color: 0xffffff,
-            linewidth: 4,
+            linewidth: 5,
         });
         const cellHighlightMesh = new three.LineLoop(
             outlineGeometry,
             outlineMaterial,
         );
-        cellHighlightMesh.position.y = 0.01;
         cellHighlightMesh.visible = false;
         scene.add(cellHighlightMesh);
 
@@ -313,7 +327,7 @@ namespace Game {
                     return;
                 }
 
-                cellHighlightMesh.position.set(cell.x + 0.5, 0, cell.y + 0.5);
+                cellHighlightMesh.position.set(cell.x + 0.5, 0.02, cell.y + 0.5);
                 cellHighlightMesh.visible = true;
             });
         });

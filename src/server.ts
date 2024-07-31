@@ -39,7 +39,7 @@ namespace Server {
     const joinedIds = new Set<number>();
     const leftIds = new Set<number>();
     const moves = new Set<common.PlayerMovingPacket>();
-    const gameMap = new common.GameMap();
+    const gameMap = common.GameMap.random();
 
     export function start() {
         Bun.serve<{ id?: number }>({
@@ -173,6 +173,7 @@ namespace Server {
                     joinedPlayer.position.x,
                     joinedPlayer.position.y,
                     joinedPlayer.color!.getHex(),
+                    gameMap,
                 ),
             );
 
