@@ -158,6 +158,26 @@ export class PlayerMovingBatchPacket implements Packet {
     }
 }
 
+export class GameMapPacket implements Packet {
+    public kind = PacketKind.GameMap;
+
+    constructor(public map: GameMap) {}
+
+    private static _encode = typia.protobuf.createEncode<GameMapPacket>();
+    private static _decode = typia.protobuf.createDecode<GameMapPacket>();
+
+    public static decode(data: Uint8Array): GameMapPacket {
+        const packet = GameMapPacket._decode(data);
+        Object.setPrototypeOf(packet, GameMapPacket.prototype);
+        Object.setPrototypeOf(packet.map, GameMap.prototype);
+        return packet;
+    }
+
+    public encode(): Uint8Array {
+        return GameMapPacket._encode(this);
+    }
+}
+
 export function sendPacket<T extends Packet>(
     ws: WebSocket | ServerSocket,
     packet: T,
@@ -317,8 +337,7 @@ export class Tile {
     }
 }
 
-export class GameMap implements Packet {
-    public kind = PacketKind.GameMap;
+export class GameMap {
     public tiles: Tile[];
 
     constructor(
@@ -364,20 +383,4 @@ export class GameMap implements Packet {
             }
         }
     }
-
-    public encode(): Uint8Array {
-        return GameMap._encode(this);
-    }
-
-    public static decode(data: Uint8Array): GameMap {
-        const map = GameMap._decode(data);
-        map.tiles.forEach((tile) => {
-            Object.setPrototypeOf(tile, Tile.prototype);
-        });
-        Object.setPrototypeOf(map, GameMap.prototype);
-        return map;
-    }
-
-    private static _encode = typia.protobuf.createEncode<GameMap>();
-    private static _decode = typia.protobuf.createDecode<GameMap>();
 }

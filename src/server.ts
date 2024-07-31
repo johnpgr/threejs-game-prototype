@@ -14,33 +14,34 @@ export class ServerPlayer extends common.Player {
         public ws: ServerSocket,
     ) {
         super(id);
-        this.position = randomPlayerPosition();
-        this.color = randomColor();
+        this.position = ServerPlayer.randomPlayerPosition();
+        this.color = ServerPlayer.randomColor();
+    }
+
+    public static randomColor(): three.Color {
+        return new three.Color().setHSL(Math.random(), 1, 0.5);
+    }
+
+    public static randomPlayerPosition(): three.Vector2 {
+        const signX = Math.random() < 0.5 ? -1 : 1;
+        const signY = Math.random() < 0.5 ? -1 : 1;
+        return new three.Vector2(
+            Math.floor((Math.random() * common.MAP_HEIGHT) / 2 - 1) * signX,
+            Math.floor((Math.random() * common.MAP_WIDTH) / 2 - 1) * signY,
+         );
     }
 }
 
-function randomColor(): three.Color {
-    return new three.Color().setHSL(Math.random(), 1, 0.5);
-}
+namespace Server {
+    let nextPlayerId = 0;
+    let lastTimestamp = performance.now();
+    const players = new Map<number, ServerPlayer>();
+    const joinedIds = new Set<number>();
+    const leftIds = new Set<number>();
+    const moves = new Set<common.PlayerMovingPacket>();
+    const gameMap = new common.GameMap();
 
-function randomPlayerPosition(): three.Vector2 {
-    const signX = Math.random() < 0.5 ? -1 : 1;
-    const signY = Math.random() < 0.5 ? -1 : 1;
-    return new three.Vector2(
-        Math.floor((Math.random() * common.MAP_HEIGHT) / 2 - 1) * signX,
-        Math.floor((Math.random() * common.MAP_WIDTH) / 2 - 1) * signY,
-    );
-}
-
-export class ServerState {
-    private nextPlayerId = 0;
-    private players = new Map<number, ServerPlayer>();
-    private joinedIds = new Set<number>();
-    private leftIds = new Set<number>();
-    private moves = new Set<common.PlayerMovingPacket>();
-    private lastTimestamp = performance.now();
-
-    constructor() {
+    export function start() {
         Bun.serve<{ id?: number }>({
             port: common.SERVER_PORT,
             fetch(request, server) {
@@ -48,38 +49,35 @@ export class ServerState {
                 return;
             },
             websocket: {
-                open: this.handleConnection.bind(this),
-                message: this.handleMessage.bind(this),
-                close: this.handleDisconnection.bind(this),
+                open: handleConnection,
+                message: handleMessage,
+                close: handleDisconnection,
             },
         });
         console.log(`Server started on port ${common.SERVER_PORT}`);
-        setTimeout(this.tick.bind(this), 1000 / SERVER_TPS);
+        setTimeout(tick, 1000 / SERVER_TPS);
     }
 
-    public tick() {
+    function tick() {
         const now = performance.now();
-        const deltaTime = (now - this.lastTimestamp) / 1000;
-        this.lastTimestamp = now;
-        this.updatePlayersPositions(deltaTime);
-        this.sendUpdatesToPlayers();
-        this.clearTickData();
+        const deltaTime = (now - lastTimestamp) / 1000;
+        lastTimestamp = now;
+        updatePlayersPositions(deltaTime);
+        sendUpdatesToPlayers();
+        clearTickData();
         const tickTime = performance.now() - now;
-        setTimeout(
-            this.tick.bind(this),
-            Math.max(0, 1000 / SERVER_TPS - tickTime),
-        );
+        setTimeout(tick, Math.max(0, 1000 / SERVER_TPS - tickTime));
     }
 
-    private handleConnection(ws: ServerSocket) {
+    function handleConnection(ws: ServerSocket) {
         ws.binaryType = "uint8array";
-        const player = this.addPlayer(ws);
+        const player = addPlayer(ws);
         if (!player) return;
         console.log(`Player ${player.id} connected`);
-        this.joinedIds.add(player.id);
+        joinedIds.add(player.id);
     }
 
-    private handleMessage(ws: ServerSocket, message: Buffer) {
+    function handleMessage(ws: ServerSocket, message: Buffer) {
         if (!(message instanceof Uint8Array) || message.byteLength < 1) {
             console.error("Invalid message received", message);
             ws.close(1003, "Invalid message");
@@ -89,7 +87,7 @@ export class ServerState {
             const { kind } = common.Packet.decode(message);
             switch (kind) {
                 case common.PacketKind.PlayerMoving:
-                    this.handlePlayerMoving(message);
+                    handlePlayerMoving(message);
                     break;
                 default:
                     // The only packet that server expects from client is PlayerMoving
@@ -103,7 +101,7 @@ export class ServerState {
         }
     }
 
-    private handleDisconnection(
+    function handleDisconnection(
         ws: ServerSocket,
         code: number,
         reason: string,
@@ -112,37 +110,37 @@ export class ServerState {
         console.log(
             `Player ${ws.data.id} disconnected; code: ${code}; reason: ${reason}`,
         );
-        this.players.delete(ws.data.id);
-        this.leftIds.add(ws.data.id);
+        players.delete(ws.data.id);
+        leftIds.add(ws.data.id);
     }
 
-    private handlePlayerMoving(data: Uint8Array) {
+    function handlePlayerMoving(data: Uint8Array) {
         const decoded = common.PlayerMovingPacket.decode(data);
-        this.moves.add(decoded);
+        moves.add(decoded);
     }
 
-    private updatePlayersPositions(deltaTime: number) {
-        this.players.forEach((p) => common.updatePlayerPos(p, deltaTime));
+    function updatePlayersPositions(deltaTime: number) {
+        players.forEach((p) => common.updatePlayerPos(p, deltaTime));
     }
 
-    private sendUpdatesToPlayers() {
-        this.sendWelcomeToNewPlayers();
+    function sendUpdatesToPlayers() {
+        sendWelcomeToNewPlayers();
 
-        const joinPackets = this.createBatchJoinsPacket();
-        const leftPackets = this.createBatchLeftPacket();
-        const movingPackets = this.createBatchMovingPacket();
+        const joinPackets = createBatchJoinsPacket();
+        const leftPackets = createBatchLeftPacket();
+        const movingPackets = createBatchMovingPacket();
 
-        this.players.forEach((p) => {
+        players.forEach((p) => {
             if (joinPackets) common.sendPacket(p.ws, joinPackets);
             if (leftPackets) common.sendPacket(p.ws, leftPackets);
             if (movingPackets) common.sendPacket(p.ws, movingPackets);
         });
     }
 
-    private createBatchJoinsPacket(): common.PlayerJoinBatchPacket | null {
-        if (this.joinedIds.size === 0) return null;
-        const joined = Array.from(this.joinedIds).map((id) => {
-            const player = this.players.get(id)!;
+    function createBatchJoinsPacket(): common.PlayerJoinBatchPacket | null {
+        if (joinedIds.size === 0) return null;
+        const joined = Array.from(joinedIds).map((id) => {
+            const player = players.get(id)!;
             return {
                 id: player.id,
                 x: player.position.x,
@@ -153,19 +151,19 @@ export class ServerState {
         return new common.PlayerJoinBatchPacket(joined);
     }
 
-    private createBatchLeftPacket(): common.PlayerLeftBatchPacket | null {
-        if (this.leftIds.size === 0) return null;
-        return new common.PlayerLeftBatchPacket(Array.from(this.leftIds));
+    function createBatchLeftPacket(): common.PlayerLeftBatchPacket | null {
+        if (leftIds.size === 0) return null;
+        return new common.PlayerLeftBatchPacket(Array.from(leftIds));
     }
 
-    private createBatchMovingPacket(): common.PlayerMovingBatchPacket | null {
-        if (this.moves.size === 0) return null;
-        return new common.PlayerMovingBatchPacket(Array.from(this.moves));
+    function createBatchMovingPacket(): common.PlayerMovingBatchPacket | null {
+        if (moves.size === 0) return null;
+        return new common.PlayerMovingBatchPacket(Array.from(moves));
     }
 
-    private sendWelcomeToNewPlayers() {
-        this.joinedIds.forEach((joinedId) => {
-            const joinedPlayer = this.players.get(joinedId);
+    function sendWelcomeToNewPlayers() {
+        joinedIds.forEach((joinedId) => {
+            const joinedPlayer = players.get(joinedId);
             if (!joinedPlayer) return;
 
             common.sendPacket<common.HelloPacket>(
@@ -178,7 +176,7 @@ export class ServerState {
                 ),
             );
 
-            const existingPlayers = Array.from(this.players.values())
+            const existingPlayers = Array.from(players.values())
                 .filter((p) => p.id !== joinedId)
                 .map((p) => ({
                     id: p.id,
@@ -196,22 +194,22 @@ export class ServerState {
         });
     }
 
-    private clearTickData() {
-        this.joinedIds.clear();
-        this.leftIds.clear();
-        this.moves.clear();
+    function clearTickData() {
+        joinedIds.clear();
+        leftIds.clear();
+        moves.clear();
     }
 
-    private addPlayer(ws: ServerSocket): ServerPlayer | null {
-        if (this.players.size >= MAX_PLAYERS) {
+    function addPlayer(ws: ServerSocket): ServerPlayer | null {
+        if (players.size >= MAX_PLAYERS) {
             ws.close(1000, "Server is full");
             return null;
         }
-        const player = new ServerPlayer(this.nextPlayerId++, ws);
-        this.players.set(player.id, player);
+        const player = new ServerPlayer(nextPlayerId++, ws);
+        players.set(player.id, player);
         player.ws.data.id = player.id;
         return player;
     }
 }
 
-new ServerState();
+Server.start();

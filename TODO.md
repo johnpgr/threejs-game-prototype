@@ -4,7 +4,10 @@
 - [ ] Pathfinding for player to move to a point avoiding walls and other players
 - [ ] Camera follow player when moving
 - [ ] Add game core mechanics
+    - [ ] Game timer
+        - [ ] Decrease map size as time goes on
     - [ ] Lives
     - [ ] Bombs
     - [ ] Powerups
 - [ ] Add bots with AI
+- [ ] Add level editor tool/page

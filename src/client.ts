@@ -15,39 +15,272 @@ class State {
     public me: common.Player | undefined;
     public players = new Map<number, common.Player>();
     private lastTimestamp = performance.now();
+    constructor(private textures: Map<number, three.Mesh>) {
+        //@ts-ignore
+        window.DEBUG = () => {
+            console.log(this);
+        };
+    }
 
-    public tick(textures: Map<number, three.Mesh>) {
+    public tick = () => {
         const now = performance.now();
         const deltaTime = (now - this.lastTimestamp) / 1000;
         this.lastTimestamp = now;
 
         this.players.forEach((p) => {
             common.updatePlayerPos(p, deltaTime);
-            const playerMesh = textures.get(p.id);
+            const playerMesh = this.textures.get(p.id);
             if (playerMesh) {
                 playerMesh.position.set(p.position.x, 0.01, p.position.y);
             }
         });
-    }
+    };
 }
 
-class Game {
-    private zoomFactor = 1;
-    private raycaster = new three.Raycaster();
-    private mousePos = new three.Vector2();
-    private cellHighlightMesh: three.LineLoop;
-    private playerTextures = new Map<number, three.Mesh>();
-    private playerUIs = new Map<number, addons.CSS3DObject>();
+namespace Game {
+    const scene = new three.Scene();
+    const ws = createWs();
+    const stats = createStats();
+    const rendererCss = createRendererCss();
+    const camera = createCamera();
+    const renderer = createRenderer();
+    const playerTextures = new Map<number, three.Mesh>();
+    const playerUIs = new Map<number, addons.CSS3DObject>();
+    const state = new State(playerTextures);
+    const raycaster = new three.Raycaster();
+    const mousePos = new three.Vector2();
+    let zoomFactor = 1;
 
-    constructor(
-        public scene: three.Scene,
-        public renderer: three.WebGLRenderer,
-        public rendererCss: addons.CSS3DRenderer,
-        public camera: three.OrthographicCamera,
-        public ws: WebSocket,
-        public state: State,
-        public stats: Stats,
-    ) {
+    export function start() {
+        startGrid();
+        startMouseCellRaycasting();
+        startMouseWheelCameraZoom();
+        setInterval(state.tick, 1000 / TPS);
+        animate();
+    }
+
+    export function startGrid() {
+        const grid = new three.GridHelper(
+            common.MAP_WIDTH,
+            common.MAP_HEIGHT,
+            0x888888,
+        );
+        grid.material.depthWrite = false;
+        scene.add(grid);
+    }
+
+    function createCamera(): three.OrthographicCamera {
+        const camera = new three.OrthographicCamera(
+            -CAMERA_DISTANCE * aspect * DEFAULT_ZOOM_FACTOR,
+            CAMERA_DISTANCE * aspect * DEFAULT_ZOOM_FACTOR,
+            CAMERA_DISTANCE * DEFAULT_ZOOM_FACTOR,
+            -CAMERA_DISTANCE * DEFAULT_ZOOM_FACTOR,
+            1,
+            1000,
+        );
+        camera.position.set(CAMERA_DISTANCE, CAMERA_DISTANCE, CAMERA_DISTANCE);
+        camera.lookAt(scene.position);
+
+        return camera;
+    }
+
+    function createRendererCss(): addons.CSS3DRenderer {
+        const rendererCss = new addons.CSS3DRenderer();
+        rendererCss.setSize(GAME_WIDTH, GAME_HEIGHT);
+        rendererCss.domElement.style.pointerEvents = "none";
+        rendererCss.domElement.style.position = "absolute";
+        rendererCss.domElement.style.top = "0";
+        rendererCss.domElement.style.left = "0";
+        document.body.appendChild(rendererCss.domElement);
+
+        return rendererCss;
+    }
+
+    function createStats(): Stats {
+        const stats = new Stats();
+        stats.dom.style.position = "absolute";
+        stats.dom.style.top = "0";
+        stats.dom.style.left = "0";
+        stats.dom.style.pointerEvents = "none";
+        stats.dom.style.zIndex = "999";
+        document.body.appendChild(stats.dom);
+
+        return stats;
+    }
+
+    function createRenderer(): three.WebGLRenderer {
+        const renderer = new three.WebGLRenderer();
+        renderer.setSize(GAME_WIDTH, GAME_HEIGHT);
+        renderer.setClearColor(0x000000);
+        document.body.appendChild(renderer.domElement);
+
+        return renderer;
+    }
+
+    function createWs(): WebSocket {
+        const ws = new WebSocket(
+            `ws://${window.location.hostname}:${common.SERVER_PORT}`,
+        );
+        ws.binaryType = "arraybuffer";
+        ws.addEventListener("open", () => {
+            console.log("Socket connection open");
+        });
+        ws.addEventListener("close", () => {
+            console.log("Socket connection closed");
+        });
+        ws.addEventListener("error", (event) => {
+            //TODO: reconnect on errors
+            console.log("Websocket error", event);
+        });
+        ws.addEventListener("message", handleIncomingMessage);
+        return ws;
+    }
+
+    function handleIncomingMessage(ev: MessageEvent) {
+        if (!(ev.data instanceof ArrayBuffer)) {
+            ws.close(1003, "Invalid message");
+            return;
+        }
+        if (ev.data.byteLength < 1) {
+            ws.close(1003, "Invalid message");
+            return;
+        }
+        try {
+            const buf = new Uint8Array(ev.data);
+            const { kind } = common.Packet.decode(buf);
+            switch (kind) {
+                case common.PacketKind.Hello: {
+                    handleHello(buf);
+                    break;
+                }
+                case common.PacketKind.PlayerJoinBatch: {
+                    handlePlayerJoin(buf);
+                    break;
+                }
+                case common.PacketKind.PlayerLeftBatch: {
+                    handlePlayerLeft(buf);
+                    break;
+                }
+                case common.PacketKind.PlayerMovingBatch: {
+                    handlePlayerMoving(buf);
+                    break;
+                }
+                case common.PacketKind.PlayerMoving: {
+                    unreachable("Unexpected packet kind");
+                }
+            }
+        } catch (error) {
+            console.error("Error handling message:", error);
+            ws.close(1003, "Invalid message");
+        }
+    }
+
+    function handleHello(buf: Uint8Array) {
+        const packet = common.HelloPacket.decode(buf);
+        console.log(`Connected as player ${packet.id}`);
+        state.me = new common.Player(packet.id);
+        state.me.position.set(packet.x, packet.y);
+        state.me.color = new three.Color(packet.color);
+        state.players.set(state.me.id, state.me);
+        const playerMesh = common.boxFromColor(state.me.color);
+        const playerUI = createPlayerUI(state.me);
+        playerTextures.set(state.me.id, playerMesh);
+        playerUIs.set(state.me.id, playerUI);
+        scene.add(playerMesh);
+        scene.add(playerUI);
+    }
+
+    function handlePlayerJoin(buf: Uint8Array) {
+        const packet = common.PlayerJoinBatchPacket.decode(buf);
+        for (const p of packet.players) {
+            if (p.id === state.me?.id) continue;
+            const player = new common.Player(
+                p.id,
+                new three.Vector2().set(p.x, p.y),
+                new three.Color(p.color),
+            );
+            console.log(`Player joined: ${player.id}`);
+            state.players.set(p.id, player);
+            const playerMesh = common.boxFromColor(player.color!);
+            const playerUI = createPlayerUI(player);
+            playerTextures.set(player.id, playerMesh);
+            playerUIs.set(player.id, playerUI);
+            scene.add(playerMesh);
+            scene.add(playerUI);
+        }
+    }
+
+    function handlePlayerLeft(buf: Uint8Array) {
+        const packet = common.PlayerLeftBatchPacket.decode(buf);
+        for (const id of packet.playerIds) {
+            console.log(`Player left: ${id}`);
+            state.players.delete(id);
+            const playerMesh = playerTextures.get(id);
+            const playerUI = playerUIs.get(id);
+            if (playerMesh) {
+                playerTextures.delete(id);
+                scene.remove(playerMesh);
+            }
+            if (playerUI) {
+                playerUIs.delete(id);
+                scene.remove(playerUI);
+            }
+        }
+    }
+
+    function handlePlayerMoving(buf: Uint8Array) {
+        const packet = common.PlayerMovingBatchPacket.decode(buf);
+        for (const move of packet.moves) {
+            const player = state.players.get(move.id);
+            if (!player) {
+                console.log(`Received message for unknown player ${move.id}`);
+                ws.close();
+                return;
+            }
+            player.moveTarget = new three.Vector2(move.targetX, move.targetY);
+        }
+    }
+
+    function animate() {
+        stats.begin();
+        renderer.setAnimationLoop(animate);
+        for (const [id, ui] of playerUIs.entries()) {
+            const player = state.players.get(id);
+            if (!player) continue;
+            // Position the UI to the right of the player's cube
+            ui.position.copy(
+                new three.Vector3(player.position.x, 0, player.position.y),
+            );
+            ui.position.x += 2.5; // Adjust value to change the UI's distance from the player
+            ui.position.y += 2; // Adjust to change the vertical position of the UI
+
+            // Make the UI always face the camera
+            ui.quaternion.copy(camera.quaternion);
+        }
+        renderer.render(scene, camera);
+        rendererCss.render(scene, camera);
+        stats.end();
+    }
+
+    function startMouseWheelCameraZoom() {
+        renderer.domElement.addEventListener("wheel", (event) => {
+            const zoomSpeed = 0.1;
+            const newZoomFactor =
+                zoomFactor + (event.deltaY > 0 ? zoomSpeed : -zoomSpeed);
+            updateCameraZoom(Math.max(0.1, Math.min(newZoomFactor, 5))); // Limit zoom between 0.1 and 5
+        });
+    }
+
+    function updateCameraZoom(newZoomFactor: number) {
+        zoomFactor = newZoomFactor;
+        camera.left = -CAMERA_DISTANCE * aspect * zoomFactor;
+        camera.right = CAMERA_DISTANCE * aspect * zoomFactor;
+        camera.top = CAMERA_DISTANCE * zoomFactor;
+        camera.bottom = -CAMERA_DISTANCE * zoomFactor;
+        camera.updateProjectionMatrix();
+    }
+
+    function startMouseCellRaycasting() {
         const outlineGeometry = new three.BufferGeometry();
         //prettier-ignore
         const outlineVertices = new Float32Array([
@@ -65,238 +298,60 @@ class Game {
             color: 0xffffff,
             linewidth: 4,
         });
-        this.cellHighlightMesh = new three.LineLoop(
+        const cellHighlightMesh = new three.LineLoop(
             outlineGeometry,
             outlineMaterial,
         );
-        this.cellHighlightMesh.position.y = 0.01;
-        this.cellHighlightMesh.visible = false;
-        this.scene.add(this.cellHighlightMesh);
-        this.setupCellRaycasting();
-        this.setupWs();
-        this.setupWheelCameraZoom();
+        cellHighlightMesh.position.y = 0.01;
+        cellHighlightMesh.visible = false;
+        scene.add(cellHighlightMesh);
 
-        setInterval(() => {
-            this.state.tick(this.playerTextures);
-        }, 1000 / TPS);
-    }
+        renderer.domElement.addEventListener("mousemove", (e: MouseEvent) => {
+            raycastMouseInGrid(e, (cell) => {
+                if (!cell) {
+                    cellHighlightMesh.visible = false;
+                    return;
+                }
 
-    private setupWs() {
-        this.ws.binaryType = "arraybuffer";
-        this.ws.addEventListener("open", () => {
-            console.log("Socket connection open");
+                cellHighlightMesh.position.set(cell.x + 0.5, 0, cell.y + 0.5);
+                cellHighlightMesh.visible = true;
+            });
         });
-        this.ws.addEventListener("close", () => {
-            console.log("Socket connection closed");
-        });
-        this.ws.addEventListener("error", (event) => {
-            //TODO: reconnect on errors
-            console.log("Websocket error", event);
-        });
-        this.ws.addEventListener(
-            "message",
-            this.handleIncomingMessage.bind(this),
-        );
-    }
 
-    private handleIncomingMessage(ev: MessageEvent) {
-        if (!(ev.data instanceof ArrayBuffer)) {
-            this.ws.close(1003, "Invalid message");
-            return;
-        }
-        if (ev.data.byteLength < 1) {
-            this.ws.close(1003, "Invalid message");
-            return;
-        }
-        try {
-            const buf = new Uint8Array(ev.data);
-            const { kind } = common.Packet.decode(buf);
-            switch (kind) {
-                case common.PacketKind.Hello: {
-                    this.handleHello(buf);
-                    break;
-                }
-                case common.PacketKind.PlayerJoinBatch: {
-                    this.handlePlayerJoin(buf);
-                    break;
-                }
-                case common.PacketKind.PlayerLeftBatch: {
-                    this.handlePlayerLeft(buf);
-                    break;
-                }
-                case common.PacketKind.PlayerMovingBatch: {
-                    this.handlePlayerMoving(buf);
-                    break;
-                }
-                case common.PacketKind.PlayerMoving: {
-                    unreachable("Unexpected packet kind");
-                }
-            }
-        } catch (error) {
-            console.error("Error handling message:", error);
-            this.ws.close(1003, "Invalid message");
-        }
-    }
-
-    private handleHello(buf: Uint8Array) {
-        const packet = common.HelloPacket.decode(buf);
-        console.log(`Connected as player ${packet.id}`);
-        this.state.me = new common.Player(packet.id);
-        this.state.me.position.set(packet.x, packet.y);
-        this.state.me.color = new three.Color(packet.color);
-        this.state.players.set(this.state.me.id, this.state.me);
-        const playerMesh = common.boxFromColor(this.state.me.color);
-        const playerUI = this.createPlayerUI(this.state.me);
-        this.playerTextures.set(this.state.me.id, playerMesh);
-        this.playerUIs.set(this.state.me.id, playerUI);
-        this.scene.add(playerMesh);
-        this.scene.add(playerUI);
-    }
-
-    private handlePlayerJoin(buf: Uint8Array) {
-        const packet = common.PlayerJoinBatchPacket.decode(buf);
-        for (const p of packet.players) {
-            if (p.id === this.state.me?.id) continue;
-            const player = new common.Player(
-                p.id,
-                new three.Vector2().set(p.x, p.y),
-                new three.Color(p.color),
-            );
-            console.log(`Player joined: ${player.id}`);
-            this.state.players.set(p.id, player);
-            const playerMesh = common.boxFromColor(player.color!);
-            const playerUI = this.createPlayerUI(player);
-            this.playerTextures.set(player.id, playerMesh);
-            this.playerUIs.set(player.id, playerUI);
-            this.scene.add(playerMesh);
-            this.scene.add(playerUI);
-        }
-    }
-
-    private handlePlayerLeft(buf: Uint8Array) {
-        const packet = common.PlayerLeftBatchPacket.decode(buf);
-        for (const id of packet.playerIds) {
-            console.log(`Player left: ${id}`);
-            this.state.players.delete(id);
-            const playerMesh = this.playerTextures.get(id);
-            const playerUI = this.playerUIs.get(id);
-            if (playerMesh) {
-                this.playerTextures.delete(id);
-                this.scene.remove(playerMesh);
-            }
-            if (playerUI) {
-                this.playerUIs.delete(id);
-                this.scene.remove(playerUI);
-            }
-        }
-    }
-
-    private handlePlayerMoving(buf: Uint8Array) {
-        const packet = common.PlayerMovingBatchPacket.decode(buf);
-        for (const move of packet.moves) {
-            const player = this.state.players.get(move.id);
-            if (!player) {
-                console.log(`Received message for unknown player ${move.id}`);
-                this.ws.close();
-                return;
-            }
-            player.moveTarget = new three.Vector2(move.targetX, move.targetY);
-        }
-    }
-
-    public animate() {
-        this.stats.begin();
-        this.renderer.setAnimationLoop(this.animate.bind(this));
-        for (const [id, ui] of this.playerUIs.entries()) {
-            const player = this.state.players.get(id);
-            if (!player) continue;
-            // Position the UI to the right of the player's cube
-            ui.position.copy(
-                new three.Vector3(player.position.x, 0, player.position.y),
-            );
-            ui.position.x += 2.5; // Adjust this value to change the UI's distance from the player
-            ui.position.y += 2; // Adjust this to change the vertical position of the UI
-
-            // Make the UI always face the camera
-            ui.quaternion.copy(this.camera.quaternion);
-        }
-        this.renderer.render(this.scene, this.camera);
-        this.rendererCss.render(this.scene, this.camera);
-        this.stats.end();
-    }
-
-    private setupWheelCameraZoom() {
-        this.renderer.domElement.addEventListener("wheel", (event) => {
-            const zoomSpeed = 0.1;
-            const newZoomFactor =
-                this.zoomFactor + (event.deltaY > 0 ? zoomSpeed : -zoomSpeed);
-            this.updateCameraZoom(Math.max(0.1, Math.min(newZoomFactor, 5))); // Limit zoom between 0.1 and 5
-        });
-    }
-
-    private updateCameraZoom(newZoomFactor: number) {
-        this.zoomFactor = newZoomFactor;
-        this.camera.left = -CAMERA_DISTANCE * aspect * this.zoomFactor;
-        this.camera.right = CAMERA_DISTANCE * aspect * this.zoomFactor;
-        this.camera.top = CAMERA_DISTANCE * this.zoomFactor;
-        this.camera.bottom = -CAMERA_DISTANCE * this.zoomFactor;
-        this.camera.updateProjectionMatrix();
-    }
-
-    private setupCellRaycasting() {
-        this.renderer.domElement.addEventListener(
-            "mousemove",
-            (e: MouseEvent) => {
-                this.raycastMouseInGrid(e, (cell) => {
-                    if (!cell) {
-                        this.cellHighlightMesh.visible = false;
-                        return;
-                    }
-
-                    this.cellHighlightMesh.position.set(
-                        cell.x + 0.5,
-                        0,
-                        cell.y + 0.5,
-                    );
-                    this.cellHighlightMesh.visible = true;
-                });
-            },
-        );
-
-        this.renderer.domElement.addEventListener("click", (e: MouseEvent) => {
-            this.raycastMouseInGrid(e, (cell) => {
+        renderer.domElement.addEventListener("click", (e: MouseEvent) => {
+            raycastMouseInGrid(e, (cell) => {
                 if (!cell) return;
-                if (!this.state.me) return;
-                this.state.me.moveTarget = cell;
+                if (!state.me) return;
+                state.me.moveTarget = cell;
                 const packet = new common.PlayerMovingPacket(
-                    this.state.me.id,
-                    this.state.me.moveTarget.x,
-                    this.state.me.moveTarget.y,
+                    state.me.id,
+                    state.me.moveTarget.x,
+                    state.me.moveTarget.y,
                 ).encode();
-                this.ws.send(packet);
+                ws.send(packet);
             });
         });
     }
 
-    private raycastMouseInGrid(
+    function raycastMouseInGrid(
         e: MouseEvent,
         callback: (cell: three.Vector2 | null) => void,
     ) {
         // Get the bounding rectangle of the renderer's DOM element
-        const rect = this.renderer.domElement.getBoundingClientRect();
+        const rect = renderer.domElement.getBoundingClientRect();
 
         // Calculate mouse position relative to the canvas
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
 
         // Convert to normalized device coordinates (-1 to +1)
-        this.mousePos.x = (mouseX / rect.width) * 2 - 1;
-        this.mousePos.y = -(mouseY / rect.height) * 2 + 1;
+        mousePos.x = (mouseX / rect.width) * 2 - 1;
+        mousePos.y = -(mouseY / rect.height) * 2 + 1;
 
-        this.raycaster.setFromCamera(this.mousePos, this.camera);
+        raycaster.setFromCamera(mousePos, camera);
         const plane = new three.Plane(new three.Vector3(0, 1, 0), 0);
         const intersectionPoint = new three.Vector3();
-        this.raycaster.ray.intersectPlane(plane, intersectionPoint);
+        raycaster.ray.intersectPlane(plane, intersectionPoint);
 
         if (intersectionPoint) {
             const cellX = Math.round(intersectionPoint.x);
@@ -307,7 +362,7 @@ class Game {
         }
     }
 
-    private createPlayerUI(player: common.Player): addons.CSS3DObject {
+    function createPlayerUI(player: common.Player): addons.CSS3DObject {
         const div = document.createElement("div");
         div.style.width = "300px";
         div.style.backgroundColor = "rgba(0, 0, 0, 0.7)";
@@ -349,68 +404,4 @@ class Game {
     }
 }
 
-main();
-
-function main() {
-    const scene = new three.Scene();
-    const renderer = new three.WebGLRenderer();
-    renderer.setSize(GAME_WIDTH, GAME_HEIGHT);
-    renderer.setClearColor(0x000000);
-    document.body.appendChild(renderer.domElement);
-
-    const rendererCss = new addons.CSS3DRenderer();
-    rendererCss.setSize(GAME_WIDTH, GAME_HEIGHT);
-    rendererCss.domElement.style.pointerEvents = "none";
-    rendererCss.domElement.style.position = "absolute";
-    rendererCss.domElement.style.top = "0";
-    rendererCss.domElement.style.left = "0";
-    document.body.appendChild(rendererCss.domElement);
-
-    const camera = new three.OrthographicCamera(
-        -CAMERA_DISTANCE * aspect * DEFAULT_ZOOM_FACTOR,
-        CAMERA_DISTANCE * aspect * DEFAULT_ZOOM_FACTOR,
-        CAMERA_DISTANCE * DEFAULT_ZOOM_FACTOR,
-        -CAMERA_DISTANCE * DEFAULT_ZOOM_FACTOR,
-        1,
-        1000,
-    );
-    camera.position.set(CAMERA_DISTANCE, CAMERA_DISTANCE, CAMERA_DISTANCE);
-    camera.lookAt(scene.position);
-
-    const grid = new three.GridHelper(
-        common.MAP_WIDTH,
-        common.MAP_HEIGHT,
-        0x888888,
-    );
-    grid.material.depthWrite = false;
-    scene.add(grid);
-
-    const stats = new Stats();
-    stats.dom.style.position = "absolute";
-    stats.dom.style.top = "0";
-    stats.dom.style.left = "0";
-    stats.dom.style.pointerEvents = "none";
-    stats.dom.style.zIndex = "999";
-    // Add it to the document
-    document.body.appendChild(stats.dom);
-
-    const ws = new WebSocket(
-        `ws://${window.location.hostname}:${common.SERVER_PORT}`,
-    );
-    const state = new State();
-    const game = new Game(
-        scene,
-        renderer,
-        rendererCss,
-        camera,
-        ws,
-        state,
-        stats,
-    );
-    game.animate();
-
-    //@ts-ignore
-    window.DEBUG = function () {
-        console.log(game.state);
-    };
-}
+Game.start();
