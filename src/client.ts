@@ -2,11 +2,14 @@ import * as three from "three";
 import * as addons from "three/addons/renderers/CSS3DRenderer.js";
 import * as common from "./common";
 import { unreachable } from "./utils";
-import Stats from 'three/addons/libs/stats.module.js';
+import Stats from "three/addons/libs/stats.module.js";
 
 const TPS = 60;
 const GAME_WIDTH = window.innerWidth;
 const GAME_HEIGHT = window.innerHeight;
+const DEFAULT_ZOOM_FACTOR = 1.0;
+const CAMERA_DISTANCE = 10;
+let aspect = GAME_WIDTH / GAME_HEIGHT;
 
 class State {
     public me: common.Player | undefined;
@@ -40,10 +43,10 @@ class Game {
         public scene: three.Scene,
         public renderer: three.WebGLRenderer,
         public rendererCss: addons.CSS3DRenderer,
-        public camera: three.Camera,
+        public camera: three.OrthographicCamera,
         public ws: WebSocket,
         public state: State,
-        public stats: Stats
+        public stats: Stats,
     ) {
         const outlineGeometry = new three.BufferGeometry();
         //prettier-ignore
@@ -71,10 +74,10 @@ class Game {
         this.scene.add(this.cellHighlightMesh);
         this.setupCellRaycasting();
         this.setupWs();
-        //this.setupWheelCameraZoom();
+        this.setupWheelCameraZoom();
 
         setInterval(() => {
-            game.state.tick(this.playerTextures);
+            this.state.tick(this.playerTextures);
         }, 1000 / TPS);
     }
 
@@ -215,16 +218,15 @@ class Game {
             ui.position.y += 2; // Adjust this to change the vertical position of the UI
 
             // Make the UI always face the camera
-            ui.quaternion.copy(camera.quaternion);
+            ui.quaternion.copy(this.camera.quaternion);
         }
-
-        this.renderer.render(scene, camera);
+        this.renderer.render(this.scene, this.camera);
         //this.rendererCss.render(scene, camera);
         this.stats.end();
     }
 
     private setupWheelCameraZoom() {
-        renderer.domElement.addEventListener("wheel", (event) => {
+        this.renderer.domElement.addEventListener("wheel", (event) => {
             const zoomSpeed = 0.1;
             const newZoomFactor =
                 this.zoomFactor + (event.deltaY > 0 ? zoomSpeed : -zoomSpeed);
@@ -234,11 +236,11 @@ class Game {
 
     private updateCameraZoom(newZoomFactor: number) {
         this.zoomFactor = newZoomFactor;
-        camera.left = -d * aspect * this.zoomFactor;
-        camera.right = d * aspect * this.zoomFactor;
-        camera.top = d * this.zoomFactor;
-        camera.bottom = -d * this.zoomFactor;
-        camera.updateProjectionMatrix();
+        this.camera.left = -CAMERA_DISTANCE * aspect * this.zoomFactor;
+        this.camera.right = CAMERA_DISTANCE * aspect * this.zoomFactor;
+        this.camera.top = CAMERA_DISTANCE * this.zoomFactor;
+        this.camera.bottom = -CAMERA_DISTANCE * this.zoomFactor;
+        this.camera.updateProjectionMatrix();
     }
 
     private setupCellRaycasting() {
@@ -261,7 +263,7 @@ class Game {
             },
         );
 
-        renderer.domElement.addEventListener("click", (e: MouseEvent) => {
+        this.renderer.domElement.addEventListener("click", (e: MouseEvent) => {
             this.raycastMouseInGrid(e, (cell) => {
                 if (!cell) return;
                 if (!this.state.me) return;
@@ -333,74 +335,93 @@ class Game {
     }
 }
 
-const scene = new three.Scene();
-const renderer = new three.WebGLRenderer();
-renderer.setSize(GAME_WIDTH, GAME_HEIGHT);
-renderer.setClearColor(0x202020);
-document.body.appendChild(renderer.domElement);
+main();
 
-const rendererCss = new addons.CSS3DRenderer();
-rendererCss.setSize(GAME_WIDTH, GAME_HEIGHT);
-rendererCss.domElement.style.pointerEvents = "none";
-rendererCss.domElement.style.position = "absolute";
-rendererCss.domElement.style.top = "0";
-rendererCss.domElement.style.left = "0";
-document.body.appendChild(rendererCss.domElement);
+function main() {
+    const scene = new three.Scene();
+    const renderer = new three.WebGLRenderer();
+    renderer.setSize(GAME_WIDTH, GAME_HEIGHT);
+    renderer.setClearColor(0x000000);
+    document.body.appendChild(renderer.domElement);
 
-const DEFAULT_ZOOM_FACTOR = 1.0;
-let aspect = GAME_WIDTH / GAME_HEIGHT;
-const d = 10;
-const camera = new three.OrthographicCamera(
-    -d * aspect * DEFAULT_ZOOM_FACTOR,
-    d * aspect * DEFAULT_ZOOM_FACTOR,
-    d * DEFAULT_ZOOM_FACTOR,
-    -d * DEFAULT_ZOOM_FACTOR,
-    1,
-    1000,
-);
-camera.position.set(d, d, d);
-camera.lookAt(scene.position);
+    const rendererCss = new addons.CSS3DRenderer();
+    rendererCss.setSize(GAME_WIDTH, GAME_HEIGHT);
+    rendererCss.domElement.style.pointerEvents = "none";
+    rendererCss.domElement.style.position = "absolute";
+    rendererCss.domElement.style.top = "0";
+    rendererCss.domElement.style.left = "0";
+    document.body.appendChild(rendererCss.domElement);
 
-const map = new common.GameMap();
-for (let x = 0; x < common.MAP_WIDTH; x++) {
-    map.setTile(x, 0, common.TileKind.Wall, new three.Color(0x888888));
+    const camera = new three.OrthographicCamera(
+        -CAMERA_DISTANCE * aspect * DEFAULT_ZOOM_FACTOR,
+        CAMERA_DISTANCE * aspect * DEFAULT_ZOOM_FACTOR,
+        CAMERA_DISTANCE * DEFAULT_ZOOM_FACTOR,
+        -CAMERA_DISTANCE * DEFAULT_ZOOM_FACTOR,
+        1,
+        1000,
+    );
+    camera.position.set(CAMERA_DISTANCE, CAMERA_DISTANCE, CAMERA_DISTANCE);
+    camera.lookAt(scene.position);
+
+    const map = new common.GameMap();
+    for (let x = 0; x < common.MAP_WIDTH; x++) {
+        map.setTile(x, 0, common.TileKind.Wall, new three.Color(0x888888));
+    }
+    for (let y = 0; y < common.MAP_HEIGHT; y++) {
+        map.setTile(0, y, common.TileKind.Wall, new three.Color(0x888888));
+    }
+    for (let x = 0; x < common.MAP_WIDTH; x++) {
+        map.setTile(
+            x,
+            common.MAP_HEIGHT - 1,
+            common.TileKind.Wall,
+            new three.Color(0x888888),
+        );
+    }
+    for (let y = 0; y < common.MAP_HEIGHT; y++) {
+        map.setTile(
+            common.MAP_WIDTH - 1,
+            y,
+            common.TileKind.Wall,
+            new three.Color(0x888888),
+        );
+    }
+    map.createMeshes(scene);
+
+    const grid = new three.GridHelper(
+        common.MAP_WIDTH,
+        common.MAP_HEIGHT,
+        0x888888,
+    );
+    grid.material.depthWrite = false;
+    scene.add(grid);
+
+    const stats = new Stats();
+    stats.dom.style.position = "absolute";
+    stats.dom.style.top = "0";
+    stats.dom.style.left = "0";
+    stats.dom.style.pointerEvents = "none";
+    stats.dom.style.zIndex = "999";
+    // Add it to the document
+    document.body.appendChild(stats.dom);
+
+    const ws = new WebSocket(
+        `ws://${window.location.hostname}:${common.SERVER_PORT}`,
+    );
+    const state = new State();
+    const game = new Game(
+        scene,
+        renderer,
+        rendererCss,
+        camera,
+        ws,
+        state,
+        stats,
+    );
+    game.animate();
+
+    //@ts-ignore
+    window.DEBUG = function () {
+        console.log(game.state);
+    };
 }
-for (let y = 0; y < common.MAP_HEIGHT; y++) {
-    map.setTile(0, y, common.TileKind.Wall, new three.Color(0x888888));
-}
-for (let x = 0; x < common.MAP_WIDTH; x++) {
-    map.setTile(x, common.MAP_HEIGHT - 1, common.TileKind.Wall, new three.Color(0x888888));
-}
-for (let y = 0; y < common.MAP_HEIGHT; y++) {
-    map.setTile(common.MAP_WIDTH - 1, y, common.TileKind.Wall, new three.Color(0x888888));
-}
-map.createMeshes(scene);
-
-const grid = new three.GridHelper(
-    common.MAP_WIDTH,
-    common.MAP_HEIGHT,
-    0x888888,
-);
-grid.material.depthWrite = false;
-scene.add(grid);
-
-const stats = new Stats();
-stats.dom.style.position = 'absolute';
-stats.dom.style.top = '0';
-stats.dom.style.left = '0';
-stats.dom.style.pointerEvents = "none";
-stats.dom.style.zIndex = "999";
-// Add it to the document
-document.body.appendChild(stats.dom);
-
-const ws = new WebSocket(
-    `ws://${window.location.hostname}:${common.SERVER_PORT}`,
-);
-const state = new State();
-const game = new Game(scene, renderer, rendererCss, camera, ws, state, stats);
-game.animate();
-
-//@ts-ignore
-window.DEBUG = function () {
-    console.log(game);
-};
